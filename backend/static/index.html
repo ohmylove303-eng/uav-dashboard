@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>승리 도시지역 드론 운용 판단 프로그램</title>
+
+    <script>
+        window.onerror = function (msg, url, line, col, error) {
+            var root = document.getElementById('root');
+            if (root) {
+                root.innerHTML = '<div style="color:white; padding:20px; text-align:center;">' +
+                    '<h1>⚠️ 프로그램 오류 발생</h1>' +
+                    '<p>' + msg + '</p>' +
+                    '<small>' + url + ':' + line + ':' + col + '</small>' +
+                    '</div>';
+            }
+            return false;
+        };
+    </script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.osmbuildings.org/4.1.1/OSMBuildings.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: { extend: { colors: { bg: '#0f172a', surface: '#1e293b', card: 'rgba(30, 41, 59, 0.7)' } } }
+        }
+    </script>
+    <style>
+        body {
+            background-color: #0f172a;
+            color: #f1f5f9;
+            font-family: 'Noto Sans KR', sans-serif;
+        }
+
+        .map-wrapper {
+            position: relative;
+            height: 500px;
+            border-radius: 0.75rem;
+            overflow: hidden;
+            border: 1px solid #334155;
+        }
+
+        #map {
+            height: 100%;
+            width: 100%;
+            z-index: 0;
+        }
+
+        .leaflet-control {
+            z-index: 1000 !important;
+        }
+
+        .grid-card {
+            background: rgba(30, 41, 59, 0.6);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            border-radius: 8px;
+            padding: 10px;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            min-height: 90px;
+            transition: all 0.2s;
+        }
+
+        .grid-card:hover {
+            background: rgba(30, 41, 59, 0.9);
+            border-color: rgba(96, 165, 250, 0.5);
+        }
+
+        .grid-label {
+            font-size: 11px;
+            color: #94a3b8;
+            margin-bottom: 4px;
+            font-weight: bold;
+        }
+
+        .grid-value {
+            font-size: 18px;
+            font-weight: 800;
+            color: white;
+        }
+
+        .grid-sub {
+            font-size: 10px;
+            color: #64748b;
+            margin-top: 2px;
+        }
+
+        /* 3D Control Panel */
+        .ctrl-panel {
+            background: #1e293b;
+            border: 1px solid #475569;
+            border-radius: 6px;
+            overflow: hidden;
+            margin-bottom: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        .ctrl-btn {
+            padding: 6px 10px;
+            color: white;
+            font-size: 12px;
+            font-weight: bold;
+            text-align: center;
+            cursor: pointer;
+            border-bottom: 1px solid #334155;
+        }
+
+        .ctrl-btn:last-child {
+            border-bottom: none;
+        }
+
+        .ctrl-btn:hover {
+            background: #334155;
+        }
+
+        .ctrl-row {
+            display: flex;
+        }
+
+        .ctrl-half {
+            width: 50%;
+            border-right: 1px solid #334155;
+        }
+
+        .ctrl-half:last-child {
+            border-right: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="root">
+        <div style="text-align:center; padding-top:100px; color:#64748b;">로딩 중...</div>
+    </div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        const DRONE_MODELS = [
+            { id: "DJI Mini 3 Pro", name: "DJI Mini 3 Pro (소형)", desc: "한계 10.7m/s" },
+            { id: "DJI Mavic 3", name: "DJI Mavic 3 (준전문가용)", desc: "한계 12m/s" },
+            { id: "DJI Matrice 300 RTK", name: "DJI Matrice 300 (산업용)", desc: "한계 15m/s" },
+            { id: "DJI Inspire 3", name: "DJI Inspire 3 (촬영용)", desc: "한계 14m/s" },
+            { id: "Custom (Generic)", name: "기본 설정 (Custom)", desc: "한계 10m/s" }
+        ];
+
+        function getWeatherIcon(code) {
+            if (code === 0) return "☀️";
+            if (code <= 3) return "☁️";
+            if (code >= 95) return "⛈️";
+            if (code >= 71) return "❄️";
+            if (code >= 51) return "🌧️";
+            if (code >= 45) return "🌫️";
+            return "🌤️";
+        }
+
+        const MapComponent = ({ lat, lon, onLocationSelect }) => {
+            const mapRef = useRef(null);
+            const markerRef = useRef(null);
+            const osmbRef = useRef(null);
+            const rotRef = useRef(0);
+            const tiltRef = useRef(45);
+
+            // 3D 조작
+            const adjust = (type) => {
+                if (!osmbRef.current) return;
+                if (type === 'rl') rotRef.current -= 15;
+                if (type === 'rr') rotRef.current += 15;
+                if (type === 'tu') tiltRef.current = Math.min(tiltRef.current + 10, 60);
+                if (type === 'td') tiltRef.current = Math.max(tiltRef.current - 10, 0);
+                osmbRef.current.setRotation(rotRef.current);
+                osmbRef.current.setTilt(tiltRef.current);
+            };
+
+            useEffect(() => {
+                if (mapRef.current) return;
+
+                const m = L.map('map', { center: [lat, lon], zoom: 17, zoomControl: false });
+                mapRef.current = m;
+
+                const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 });
+                const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 });
+                const lbl = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, pane: 'overlayPane' });
+
+                sat.addTo(m); lbl.addTo(m);
+                L.control.layers({ "위성": sat, "지도": osm }, { "지명 라벨": lbl }, { position: 'topright' }).addTo(m);
+                L.control.zoom({ position: 'bottomright' }).addTo(m);
+
+                // 마커 및 클릭 이벤트 (Leaflet)
+                markerRef.current = L.marker([lat, lon]).addTo(m);
+
+                // 중요: 맵 클릭 시 이벤트 전파
+                m.on('click', (e) => {
+                    console.log('Map Clicked:', e.latlng);
+                    onLocationSelect(e.latlng.lat, e.latlng.lng, null);
+                });
+
+                // 3D Buildings
+                try {
+                    const osmb = new OSMBuildings(m).load('https://{s}.data.osmbuildings.org/0.2/59fcc2e8/tile/{z}/{x}/{y}.json');
+                    osmbRef.current = osmb;
+
+                    // 3D 객체 클릭 시 이벤트 전파 및 메타데이터 추출
+                    osmb.click((e) => {
+                        console.log('OSMB Clicked:', e);
+                        const props = (e.feature && e.feature.properties) || null;
+                        onLocationSelect(e.lat, e.lon, props);
+                    });
+                } catch (e) { console.warn("OSMB Load Error", e); }
+
+                // Controls
+                const Ctrl = L.Control.extend({
+                    onAdd: () => {
+                        const d = L.DomUtil.create('div');
+
+                        const bg1 = L.DomUtil.create('div', 'ctrl-panel', d);
+                        const b1 = L.DomUtil.create('div', 'ctrl-btn', bg1);
+                        b1.innerHTML = '👀 로드뷰';
+                        b1.onclick = (e) => {
+                            e.preventDefault(); e.stopPropagation();
+                            const c = mapRef.current.getCenter();
+                            window.open('https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=' + c.lat + ',' + c.lng, '_blank');
+                        };
+
+                        const bg2 = L.DomUtil.create('div', 'ctrl-panel', d);
+                        const r1 = L.DomUtil.create('div', 'ctrl-row', bg2);
+                        const bt1 = L.DomUtil.create('div', 'ctrl-btn ctrl-half', r1);
+                        bt1.innerHTML = '↺ 좌'; bt1.onclick = (e) => { e.stopPropagation(); adjust('rl') };
+                        const bt2 = L.DomUtil.create('div', 'ctrl-btn ctrl-half', r1);
+                        bt2.innerHTML = '우 ↻'; bt2.onclick = (e) => { e.stopPropagation(); adjust('rr') };
+
+                        const r2 = L.DomUtil.create('div', 'ctrl-row', bg2);
+                        const bt3 = L.DomUtil.create('div', 'ctrl-btn ctrl-half', r2);
+                        bt3.innerHTML = '⬆️ 각도'; bt3.onclick = (e) => { e.stopPropagation(); adjust('tu') };
+                        const bt4 = L.DomUtil.create('div', 'ctrl-btn ctrl-half', r2);
+                        bt4.innerHTML = '⬇️ 각도'; bt4.onclick = (e) => { e.stopPropagation(); adjust('td') };
+
+                        return d;
+                    }
+                });
+                new Ctrl({ position: 'topleft' }).addTo(m);
+
+            }, []);
+
+            useEffect(() => {
+                if (!mapRef.current || !markerRef.current) return;
+                markerRef.current.setLatLng([lat, lon]);
+                // 지도 중심 이동
+                mapRef.current.setView([lat, lon], mapRef.current.getZoom(), { animate: true });
+            }, [lat, lon]);
+
+            return <div className="map-wrapper shadow-2xl"><div id="map"></div></div>;
+        };
+
+        function App() {
+            const [loc, setLoc] = useState({ lat: 37.5796, lon: 126.9631 });
+            const [w, setW] = useState(null);
+            const [evalRes, setEvalRes] = useState(null);
+            const [loading, setLoading] = useState(false);
+            const [bldg, setBldg] = useState(null);
+            const [addr, setAddr] = useState("");
+
+            const [form, setForm] = useState({
+                building_height: 25, street_width: 15, wind_alignment: '직각',
+                mission_altitude: 30, no_fly_zone: false, crowd_area: false,
+                gps_locked: 12, glonass_locked: 6, drone_model: "DJI Mavic 3"
+            });
+
+            // State for loading weather specifically
+            const [weatherLoading, setWeatherLoading] = useState(false);
+
+            // 안전한 로직 처리 (osmData 추가)
+            const onSelect = (lat, lon, osmData) => {
+                setLoc({ lat, lon });
+                setWeatherLoading(true); // 로딩 시작
+
+                // 1. Weather
+                fetch('/api/weather?lat=' + lat + '&lon=' + lon)
+                    .then(r => r.json())
+                    .then(d => {
+                        setW(d.weather);
+                        setWeatherLoading(false); // 로딩 완료
+                    })
+                    .catch(e => {
+                        console.error(e);
+                        setWeatherLoading(false);
+                    });
+
+                // 2. Building (OSM 우선)
+                const fetchBuilding = fetch('/api/building-height?lat=' + lat + '&lon=' + lon).then(r => r.json());
+
+                fetchBuilding.then(d => {
+                    let finalBldg = d || {};
+                    // OSM 데이터가 있으면 덮어쓰기
+                    if (osmData) {
+                        const name = osmData.name || osmData.name_en;
+                        const levels = osmData.levels;
+                        const height = osmData.height || (levels ? levels * 3.5 : 0);
+
+                        if (name) finalBldg.name = name; // UI 표시용
+                        if (levels) finalBldg.estimated_floors = levels;
+                        if (height) finalBldg.estimated_height_m = height;
+                        if (levels || height) {
+                            finalBldg.zoning_type = "OSM 실측 데이터";
+                            finalBldg.source = "OSM";
+                        }
+                    }
+
+                    setBldg(finalBldg);
+                    if (finalBldg.estimated_height_m) {
+                        setForm(p => Object.assign({}, p, { building_height: finalBldg.estimated_height_m }));
+                    }
+
+                    // 3. Address (OSM 이름 우선)
+                    if (osmData && (osmData.name || osmData.name_en)) {
+                        setAddr('🏢 ' + (osmData.name || osmData.name_en));
+                    } else {
+                        setAddr("위치 확인 중...");
+                        fetch('https://nominatim.openstreetmap.org/reverse?format=json&lat=' + lat + '&lon=' + lon + '&zoom=18&addressdetails=1', { headers: { 'User-Agent': 'UAV-Dash' } })
+                            .then(r => r.json())
+                            .then(d => {
+                                const a = d.address;
+                                var label = '위치 확인됨';
+                                if (a) {
+                                    const b = a.building || a.apartment || a.office;
+                                    if (b) label = '🏢 ' + b;
+                                    else label = '📍 ' + (a.road || a.city || '위치 확인됨');
+                                }
+                                setAddr(label);
+                            })
+                            .catch(() => setAddr("주소 정보 없음"));
+                    }
+                }).catch(e => console.error(e));
+            };
+
+            const runEval = async () => {
+                setLoading(true);
+                try {
+                    const payload = Object.assign({ latitude: loc.lat, longitude: loc.lon }, form);
+                    const res = await fetch('/api/evaluate', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    const d = await res.json();
+                    setEvalRes(d);
+                } catch (e) { alert("Error: " + e); }
+                finally { setLoading(false); }
+            };
+
+            useEffect(() => { onSelect(loc.lat, loc.lon); }, []);
+
+            const getStatusColor = (s) => {
+                if (s === 'GO') return 'bg-green-900/40 text-green-400 border-green-500';
+                if (s === 'RESTRICT') return 'bg-yellow-900/40 text-yellow-500 border-yellow-500';
+                return 'bg-red-900/40 text-red-500 border-red-500';
+            };
+
+            // Drone Desc Helper
+            const currentDrone = DRONE_MODELS.find(function (m) { return m.id === form.drone_model }) || {};
+            const droneDesc = currentDrone.desc || form.drone_model;
+
+            return (
+                <div className="container mx-auto p-4 max-w-7xl animate-fade-in pb-20">
+                    <header className="mb-6 flex justify-between items-center bg-slate-800 p-6 rounded-xl shadow-lg border-b-4 border-blue-600">
+                        <div>
+                            <h1 className="text-2xl font-black text-white">🚁 승리 도시지역 드론 운용 판단</h1>
+                            <p className="text-blue-300 text-sm mt-1">UAV Urban Operations Dashboard</p>
+                        </div>
+                        <div className="text-right">
+                            <span className="bg-blue-900/50 text-blue-200 px-3 py-1 rounded text-sm font-bold border border-blue-500/30">
+                                {droneDesc}
+                            </span>
+                        </div>
+                    </header>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        {/* LEFT COLUMN: Map & Controls */}
+                        <div className="space-y-4">
+                            {/* MAP */}
+                            <div className="relative">
+                                <MapComponent lat={loc.lat} lon={loc.lon} onLocationSelect={onSelect} />
+                                <div className="absolute bottom-4 left-4 bg-slate-900/90 backdrop-blur-md p-3 rounded-lg border border-slate-600 z-[999] shadow-2xl min-w-[240px] transition-all">
+                                    <div className="font-bold text-sm text-white flex items-center gap-2 mb-1">
+                                        <span>📍</span> {addr || '지도에서 위치를 선택하세요'}
+                                    </div>
+                                    {bldg ? (
+                                        <div className="text-xs text-gray-400 space-y-1 border-t border-gray-700 pt-2 mt-2">
+                                            <div className="flex justify-between items-center">
+                                                <span>🏢 건물 규모</span>
+                                                <span className="text-white font-bold text-sm">{bldg.estimated_floors}층 <span className="text-gray-500 font-normal">({bldg.estimated_height_m}m)</span></span>
+                                            </div>
+                                            <div className="flex justify-between items-center">
+                                                <span>🏗️ 용도지역</span>
+                                                <span className="text-blue-400 font-medium">{bldg.zoning_type}</span>
+                                            </div>
+                                            <div className="flex justify-between items-center">
+                                                <span>📊 용적/건폐</span>
+                                                <span className="text-gray-300">{bldg.far_percent}% / {bldg.bcr_percent}%</span>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="text-xs text-gray-500 mt-1 pl-6">클릭하여 건물 정보 분석...</div>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* DRONE & ENV INPUTS */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="bg-surface p-4 rounded-xl border border-gray-700">
+                                    <h3 className="text-xs font-bold text-gray-400 mb-2">운용 기체</h3>
+                                    <select className="w-full bg-slate-900 border border-slate-600 p-2 rounded text-white font-bold text-sm outline-none focus:border-blue-500"
+                                        value={form.drone_model} onChange={e => setForm({ ...form, drone_model: e.target.value })}>
+                                        {DRONE_MODELS.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                                    </select>
+                                </div>
+                                <div className="bg-surface p-4 rounded-xl border border-gray-700">
+                                    <h3 className="text-xs font-bold text-gray-400 mb-2">현장 변수</h3>
+                                    <div className="flex gap-2">
+                                        <input type="number" placeholder="건물H(m)" className="w-1/2 bg-slate-900 border border-slate-600 p-2 rounded text-white text-sm"
+                                            value={form.building_height} onChange={e => setForm({ ...form, building_height: parseFloat(e.target.value) })} />
+                                        <input type="number" placeholder="도로W(m)" className="w-1/2 bg-slate-900 border border-slate-600 p-2 rounded text-white text-sm"
+                                            value={form.street_width} onChange={e => setForm({ ...form, street_width: parseFloat(e.target.value) })} />
+                                    </div>
+                                </div>
+                            </div>
+
+                            <button onClick={runEval} disabled={loading}
+                                className="w-full py-4 rounded-xl font-black text-lg text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 shadow-lg transform active:scale-[0.98] transition-all">
+                                {loading ? '데이터 정밀 분석 중...' : '🚀 비행 가능 여부 판정 (EVALUATE)'}
+                            </button>
+                        </div>
+
+                        {/* RIGHT COLUMN: Weather & Results */}
+                        <div className="space-y-4">
+                            {/* WEATHER GRID (UAV Forecast Style) */}
+                            <div className="bg-slate-800 p-5 rounded-xl border border-gray-700 shadow-lg relative">
+                                <h3 className="font-bold text-white mb-4 flex items-center justify-between">
+                                    <span className="flex items-center gap-2">🌤️ 실시간 기상 상태 <span className="text-xs font-normal text-gray-400">(Open-Meteo 기반)</span></span>
+                                    <span className="text-[10px] bg-slate-900 px-2 py-1 rounded text-gray-400 font-mono">
+                                        {Number(loc.lat).toFixed(4)}, {Number(loc.lon).toFixed(4)}
+                                    </span>
+                                </h3>
+
+                                {weatherLoading && (
+                                    <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm z-10 flex items-center justify-center rounded-xl">
+                                        <div className="text-blue-400 font-bold animate-pulse">데이터 갱신 중...</div>
+                                    </div>
+                                )}
+
+                                {w ? (
+                                    <div className={`grid grid-cols-4 gap-2 transition-opacity ${weatherLoading ? 'opacity-50' : 'opacity-100'}`}>
+                                        {/* Row 1 */}
+                                        <div className="grid-card col-span-2 bg-gradient-to-br from-blue-900/40 to-slate-900/40">
+                                            <div className="text-4xl mb-1">{getWeatherIcon(w.weather_code)}</div>
+                                            <div className="text-white font-bold text-lg">
+                                                {w.weather_code === 0 ? "맑음" : w.weather_code <= 3 ? "구름" : w.weather_code >= 51 ? "비/눈" : "흐림"}
+                                            </div>
+                                        </div>
+                                        <div className="grid-card">
+                                            <div className="grid-label">일출/일몰</div>
+                                            <div className="grid-value text-base text-yellow-400">{w.sunrise}</div>
+                                            <div className="grid-sub">{w.sunset}</div>
+                                        </div>
+                                        <div className="grid-card">
+                                            <div className="grid-label">온도</div>
+                                            <div className="grid-value text-orange-400">{Math.round(w.temperature)}°C</div>
+                                            <div className="grid-sub">이슬점 {Math.round(w.dew_point)}°C</div>
+                                        </div>
+
+                                        {/* Row 2 */}
+                                        <div className="grid-card">
+                                            <div className="grid-label">풍속</div>
+                                            <div className="grid-value text-blue-400">{Number(w.wind_speed).toFixed(1)}</div>
+                                            <div className="grid-sub">m/s</div>
+                                        </div>
+                                        <div className="grid-card">
+                                            <div className="grid-label">돌풍</div>
+                                            <div className="grid-value text-yellow-500">{Number(w.gust_speed).toFixed(1)}</div>
+                                            <div className="grid-sub">m/s</div>
+                                        </div>
+                                        <div className="grid-card">
+                                            <div className="grid-label">풍향</div>
+                                            <div className="text-2xl" style={{ transform: 'rotate(' + w.wind_direction + 'deg)' }}>⬆️</div>
+                                            <div className="grid-sub">{w.wind_direction}°</div>
+                                        </div>
+                                        <div className="grid-card">
+                                            <div className="grid-label">강수확률</div>
+                                            <div className="grid-value text-blue-300">{w.precipitation_prob}%</div>
+                                            <div className="grid-sub">습도 {w.humidity}%</div>
+                                        </div>
+
+                                        {/* Row 3 */}
+                                        <div className="grid-card">
+                                            <div className="grid-label">구름양</div>
+                                            <div className="grid-value text-gray-300">{w.cloud_cover}%</div>
+                                            <div className="grid-sub">Ceiling Info</div>
+                                        </div>
+                                        <div className="grid-card">
+                                            <div className="grid-label">시정</div>
+                                            <div className="grid-value text-green-400">{Number(w.visibility).toFixed(1)}</div>
+                                            <div className="grid-sub">km</div>
+                                        </div>
+                                        <div className="grid-card">
+                                            <div className="grid-label">위성(GPS)</div>
+                                            <div className="grid-value text-purple-400">{form.gps_locked}</div>
+                                            <div className="grid-sub">GLO {form.glonass_locked}</div>
+                                        </div>
+                                        <div className="grid-card">
+                                            <div className="grid-label">Kp 지수</div>
+                                            <div className="grid-value text-red-400">{w.kp_index}</div>
+                                            <div className="grid-sub">전파방해</div>
+                                        </div>
+                                    </div>
+                                ) : (<div className="text-center py-10 text-gray-500">데이터 로딩 중...</div>)}
+                            </div>
+
+                            {/* EVALUATION RESULTS */}
+                            {evalRes && (
+                                <div className="space-y-4 animate-fade-in">
+                                    <div className={`p-6 rounded-2xl border-4 text-center shadow-2xl ${getStatusColor(evalRes.final_judgment)}`}>
+                                        <div className="text-sm font-bold opacity-70 mb-1">FINAL DECISION</div>
+                                        <div className="text-5xl font-black tracking-tighter">{evalRes.final_judgment}</div>
+                                    </div>
+
+                                    <div className="bg-surface p-5 rounded-xl border border-gray-700">
+                                        <h3 className="font-bold text-white mb-3">📝 상세 판정 사유서</h3>
+                                        <div className="space-y-2">
+                                            {evalRes.gates.map((g, i) => (
+                                                <div key={i} className="p-3 bg-slate-900/50 rounded border border-slate-700/50 flex flex-col gap-1">
+                                                    <div className="flex justify-between items-center">
+                                                        <span className="font-bold text-gray-300 text-sm">{g.gate}</span>
+                                                        <span className={`text-xs font-bold px-2 py-0.5 rounded ${getStatusColor(g.status).replace('border-green-500', 'border-transparent')}`}>
+                                                            {g.status}
+                                                        </span>
+                                                    </div>
+                                                    <div className="text-white text-sm pl-2 border-l-2 border-slate-600">
+                                                        {g.reason}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-blue-900/20 p-3 rounded text-xs text-gray-400 grid grid-cols-2 gap-2">
+                                        <div>EWS(빌딩풍): <b className="text-white">{evalRes.ews}m/s</b></div>
+                                        <div>Fcanyon: <b className="text-white">x{evalRes.urban_factors.Fcanyon}</b></div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // React 18 createRoot
+        const container = document.getElementById('root');
+        const root = ReactDOM.createRoot(container);
+        root.render(<App />);
+    </script>
+</body>
+
+</html>
