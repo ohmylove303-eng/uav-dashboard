@@ -1,0 +1,107 @@
+{
+    "type": "FeatureCollection",
+    "features": [
+        {
+            "type": "Feature",
+            "properties": {
+                "name": "김포국제공항",
+                "type": "airport",
+                "radius_km": 9.3,
+                "restriction": "비행금지구역 (반경 9.3km)",
+                "authority": "국토교통부"
+            },
+            "geometry": {
+                "type": "Point",
+                "coordinates": [
+                    126.7914,
+                    37.5583
+                ]
+            }
+        },
+        {
+            "type": "Feature",
+            "properties": {
+                "name": "서울공항 (성남)",
+                "type": "airport",
+                "radius_km": 9.3,
+                "restriction": "비행금지구역 (반경 9.3km)",
+                "authority": "국방부/국토교통부"
+            },
+            "geometry": {
+                "type": "Point",
+                "coordinates": [
+                    127.1145,
+                    37.4435
+                ]
+            }
+        },
+        {
+            "type": "Feature",
+            "properties": {
+                "name": "청와대 주변",
+                "type": "government",
+                "radius_km": 3.0,
+                "restriction": "비행제한구역 (반경 3km)",
+                "authority": "경찰청/국방부"
+            },
+            "geometry": {
+                "type": "Point",
+                "coordinates": [
+                    126.9780,
+                    37.5869
+                ]
+            }
+        },
+        {
+            "type": "Feature",
+            "properties": {
+                "name": "용산 국방부",
+                "type": "military",
+                "radius_km": 2.0,
+                "restriction": "비행제한구역 (반경 2km)",
+                "authority": "국방부"
+            },
+            "geometry": {
+                "type": "Point",
+                "coordinates": [
+                    126.9816,
+                    37.5326
+                ]
+            }
+        },
+        {
+            "type": "Feature",
+            "properties": {
+                "name": "인천국제공항",
+                "type": "airport",
+                "radius_km": 9.3,
+                "restriction": "비행금지구역 (반경 9.3km)",
+                "authority": "국토교통부"
+            },
+            "geometry": {
+                "type": "Point",
+                "coordinates": [
+                    126.4406,
+                    37.4602
+                ]
+            }
+        },
+        {
+            "type": "Feature",
+            "properties": {
+                "name": "수원비행장",
+                "type": "military",
+                "radius_km": 9.3,
+                "restriction": "비행금지구역 (반경 9.3km)",
+                "authority": "국방부"
+            },
+            "geometry": {
+                "type": "Point",
+                "coordinates": [
+                    127.0036,
+                    37.2389
+                ]
+            }
+        }
+    ]
+}

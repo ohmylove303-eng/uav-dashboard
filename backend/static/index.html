@@ -168,8 +168,28 @@
             const mapRef = useRef(null);
             const markerRef = useRef(null);
             const osmbRef = useRef(null);
+            const noFlyLayerRef = useRef(null);
             const rotRef = useRef(0);
             const tiltRef = useRef(45);
+
+            // Overpass API: 건물 상세 정보 조회
+            const fetchBuildingDetails = async (lat, lon) => {
+                const query = `[out:json];(way(around:50,${lat},${lon})["building"];);out tags;`;
+                const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
+                try {
+                    const res = await fetch(url);
+                    const data = await res.json();
+                    if (data.elements && data.elements.length > 0) {
+                        const tags = data.elements[0].tags;
+                        return {
+                            name: tags.name || tags['name:ko'] || tags['name:en'] || null,
+                            levels: tags['building:levels'] ? parseInt(tags['building:levels']) : null,
+                            height: tags.height ? parseFloat(tags.height) : null
+                        };
+                    }
+                } catch (e) { console.warn('Overpass API Error:', e); }
+                return null;
+            };
 
             // 3D 조작
             const adjust = (type) => {
@@ -182,27 +202,59 @@
                 osmbRef.current.setTilt(tiltRef.current);
             };
 
+            // 비행금지구역 토글
+            const toggleNoFlyZones = () => {
+                if (!mapRef.current || !noFlyLayerRef.current) return;
+                if (mapRef.current.hasLayer(noFlyLayerRef.current)) {
+                    mapRef.current.removeLayer(noFlyLayerRef.current);
+                } else {
+                    mapRef.current.addLayer(noFlyLayerRef.current);
+                }
+            };
+
             useEffect(() => {
                 if (mapRef.current) return;
 
-                const m = L.map('map', { center: [lat, lon], zoom: 17, zoomControl: false });
+                const m = L.map('map', {
+                    center: [lat, lon], zoom: 16, zoomControl: false,
+                    attributionControl: false
+                });
                 mapRef.current = m;
 
-                const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 });
-                const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 });
-                const lbl = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, pane: 'overlayPane' });
+                L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+                    maxZoom: 19
+                }).addTo(m);
 
-                sat.addTo(m); lbl.addTo(m);
-                L.control.layers({ "위성": sat, "지도": osm }, { "지명 라벨": lbl }, { position: 'topright' }).addTo(m);
-                L.control.zoom({ position: 'bottomright' }).addTo(m);
-
-                // 마커 및 클릭 이벤트 (Leaflet)
                 markerRef.current = L.marker([lat, lon]).addTo(m);
 
-                // 중요: 맵 클릭 시 이벤트 전파
-                m.on('click', (e) => {
+                // 비행금지구역 레이어 로드
+                fetch('/static/no_fly_zones.json')
+                    .then(r => r.json())
+                    .then(data => {
+                        const layerGroup = L.layerGroup();
+                        data.features.forEach(feature => {
+                            const coords = feature.geometry.coordinates;
+                            const props = feature.properties;
+                            const circle = L.circle([coords[1], coords[0]], {
+                                radius: props.radius_km * 1000,
+                                color: 'red',
+                                fillColor: '#ff0000',
+                                fillOpacity: 0.15,
+                                weight: 2
+                            });
+                            circle.bindPopup(`<b>${props.name}</b><br>${props.restriction}<br><small>${props.authority}</small>`);
+                            layerGroup.addLayer(circle);
+                        });
+                        noFlyLayerRef.current = layerGroup;
+                        // 초기에는 표시하지 않음 (사용자가 토글로 켜야 함)
+                    })
+                    .catch(e => console.warn('No-fly zones load error:', e));
+
+                // 중요: 맵 클릭 시 이벤트 전파 + Overpass API 조회
+                m.on('click', async (e) => {
                     console.log('Map Clicked:', e.latlng);
-                    onLocationSelect(e.latlng.lat, e.latlng.lng, null);
+                    const overpassData = await fetchBuildingDetails(e.latlng.lat, e.latlng.lng);
+                    onLocationSelect(e.latlng.lat, e.latlng.lng, overpassData);
                 });
 
                 // 3D Buildings
@@ -210,11 +262,14 @@
                     const osmb = new OSMBuildings(m).load('https://{s}.data.osmbuildings.org/0.2/59fcc2e8/tile/{z}/{x}/{y}.json');
                     osmbRef.current = osmb;
 
-                    // 3D 객체 클릭 시 이벤트 전파 및 메타데이터 추출
-                    osmb.click((e) => {
+                    // 3D 객체 클릭 시 이벤트 전파 및 메타데이터 추출 + Overpass API 보강
+                    osmb.click(async (e) => {
                         console.log('OSMB Clicked:', e);
-                        const props = (e.feature && e.feature.properties) || null;
-                        onLocationSelect(e.lat, e.lon, props);
+                        const props = (e.feature && e.feature.properties) || {};
+                        // Overpass로 추가 정보 조회
+                        const overpassData = await fetchBuildingDetails(e.lat, e.lon);
+                        const mergedData = Object.assign({}, props, overpassData || {});
+                        onLocationSelect(e.lat, e.lon, mergedData);
                     });
                 } catch (e) { console.warn("OSMB Load Error", e); }
 
@@ -244,6 +299,12 @@
                         bt3.innerHTML = '⬆️ 각도'; bt3.onclick = (e) => { e.stopPropagation(); adjust('tu') };
                         const bt4 = L.DomUtil.create('div', 'ctrl-btn ctrl-half', r2);
                         bt4.innerHTML = '⬇️ 각도'; bt4.onclick = (e) => { e.stopPropagation(); adjust('td') };
+
+                        const bg3 = L.DomUtil.create('div', 'ctrl-panel', d);
+                        const nfz = L.DomUtil.create('div', 'ctrl-btn', bg3);
+                        nfz.innerHTML = '🚫 금지구역';
+                        nfz.style.fontSize = '11px';
+                        nfz.onclick = (e) => { e.stopPropagation(); toggleNoFlyZones(); };
 
                         return d;
                     }
@@ -279,7 +340,7 @@
             // State for loading weather specifically
             const [weatherLoading, setWeatherLoading] = useState(false);
 
-            // 안전한 로직 처리 (osmData 추가)
+            // 안전한 로직 처리 (osmData는 Overpass API 결과 포함)
             const onSelect = (lat, lon, osmData) => {
                 setLoc({ lat, lon });
                 setWeatherLoading(true); // 로딩 시작
@@ -296,34 +357,43 @@
                         setWeatherLoading(false);
                     });
 
-                // 2. Building (OSM 우선)
+                // 2. Building (Overpass + Backend 조합)
                 const fetchBuilding = fetch('/api/building-height?lat=' + lat + '&lon=' + lon).then(r => r.json());
-
                 fetchBuilding.then(d => {
                     let finalBldg = d || {};
-                    // OSM 데이터가 있으면 덮어쓰기
-                    if (osmData) {
-                        const name = osmData.name || osmData.name_en;
-                        const levels = osmData.levels;
-                        const height = osmData.height || (levels ? levels * 3.5 : 0);
 
-                        if (name) finalBldg.name = name; // UI 표시용
-                        if (levels) finalBldg.estimated_floors = levels;
-                        if (height) finalBldg.estimated_height_m = height;
+                    // Overpass API 데이터 우선 적용
+                    if (osmData) {
+                        const name = osmData.name;
+                        const levels = osmData.levels;
+                        const height = osmData.height || (levels ? levels * 3.5 : null);
+
+                        if (name) finalBldg.name = name;
+                        if (levels) {
+                            finalBldg.estimated_floors = levels;
+                            finalBldg.source = "OSM 실측";
+                        }
+                        if (height) {
+                            finalBldg.estimated_height_m = height;
+                            finalBldg.source = "OSM 실측";
+                        }
+
+                        // OSM 실측 데이터가 있으면 용도지역 표시 변경
                         if (levels || height) {
                             finalBldg.zoning_type = "OSM 실측 데이터";
-                            finalBldg.source = "OSM";
                         }
                     }
 
                     setBldg(finalBldg);
+
+                    // 폼에 건물 높이 자동 입력
                     if (finalBldg.estimated_height_m) {
                         setForm(p => Object.assign({}, p, { building_height: finalBldg.estimated_height_m }));
                     }
 
-                    // 3. Address (OSM 이름 우선)
-                    if (osmData && (osmData.name || osmData.name_en)) {
-                        setAddr('🏢 ' + (osmData.name || osmData.name_en));
+                    // 3. Address (Overpass 건물명 우선, 없으면 Nominatim)
+                    if (osmData && osmData.name) {
+                        setAddr('🏢 ' + osmData.name);
                     } else {
                         setAddr("위치 확인 중...");
                         fetch('https://nominatim.openstreetmap.org/reverse?format=json&lat=' + lat + '&lon=' + lon + '&zoom=18&addressdetails=1', { headers: { 'User-Agent': 'UAV-Dash' } })
