@@ -135,6 +135,323 @@
         .ctrl-half:last-child {
             border-right: none;
         }
+
+        /* Feature Banner */
+        .feature-banner {
+            background: linear-gradient(135deg, #1e3a8a, #7c3aed);
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            animation: slideDown 0.3s ease-out;
+        }
+
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateY(-100%);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .feature-banner .banner-icon {
+            font-size: 1.5em;
+        }
+
+        .feature-banner .banner-text {
+            color: white;
+            font-size: 0.95rem;
+        }
+
+        .feature-banner .banner-text strong {
+            background: #22c55e;
+            padding: 2px 8px;
+            border-radius: 4px;
+            margin-right: 8px;
+            font-size: 0.85em;
+        }
+
+        .feature-banner .banner-close {
+            background: rgba(255, 255, 255, 0.2);
+            border: none;
+            color: white;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: background 0.2s;
+        }
+
+        .feature-banner .banner-close:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        /* Tab Navigation */
+        .tab-navigation {
+            display: flex;
+            background: #1e293b;
+            border-bottom: 1px solid #334155;
+            padding: 0 20px;
+        }
+
+        .tab-btn {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 15px 25px;
+            background: transparent;
+            border: none;
+            color: #94a3b8;
+            cursor: pointer;
+            border-bottom: 3px solid transparent;
+            transition: all 0.2s;
+            position: relative;
+        }
+
+        .tab-btn:hover {
+            background: rgba(59, 130, 246, 0.1);
+            color: #f1f5f9;
+        }
+
+        .tab-btn.active {
+            color: #3b82f6;
+            border-bottom-color: #3b82f6;
+            background: rgba(59, 130, 246, 0.1);
+        }
+
+        .tab-btn .tab-label {
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+
+        .tab-btn .tab-desc {
+            font-size: 0.75rem;
+            margin-top: 4px;
+            opacity: 0.8;
+        }
+
+        .tab-btn .tab-new-badge {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: linear-gradient(135deg, #22c55e, #16a34a);
+            color: white;
+            font-size: 0.6rem;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 4px;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+                transform: scale(1);
+            }
+
+            50% {
+                opacity: 0.8;
+                transform: scale(1.05);
+            }
+        }
+
+        /* Corridor Simulation Styles */
+        .corridor-content {
+            display: flex;
+            gap: 20px;
+            padding: 20px;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        .corridor-map-section {
+            flex: 1;
+            background: rgba(30, 41, 59, 0.6);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #334155;
+        }
+
+        .corridor-panel-section {
+            width: 400px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .point-selection {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 15px 0;
+        }
+
+        .point-btn {
+            flex: 1;
+            padding: 12px 15px;
+            background: #1e293b;
+            border: 2px solid #475569;
+            border-radius: 8px;
+            color: #94a3b8;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 0.9em;
+        }
+
+        .point-btn:hover {
+            background: #334155;
+        }
+
+        .point-btn.active {
+            border-color: #3b82f6;
+            background: rgba(59, 130, 246, 0.2);
+            color: #60a5fa;
+        }
+
+        .point-btn.selected {
+            border-color: #22c55e;
+            color: #4ade80;
+        }
+
+        .point-arrow {
+            font-size: 1.5em;
+            color: #64748b;
+        }
+
+        .selection-hint {
+            background: rgba(59, 130, 246, 0.2);
+            border: 1px solid #3b82f6;
+            border-radius: 8px;
+            padding: 10px 15px;
+            margin-bottom: 15px;
+            color: #60a5fa;
+            text-align: center;
+            animation: pulse 1.5s infinite;
+        }
+
+        .settings-panel {
+            background: rgba(30, 41, 59, 0.6);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #334155;
+        }
+
+        .setting-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .setting-row label {
+            width: 100px;
+            color: #94a3b8;
+        }
+
+        .setting-row input,
+        .setting-row select {
+            flex: 1;
+            padding: 8px 12px;
+            background: #1e293b;
+            border: 1px solid #475569;
+            border-radius: 6px;
+            color: white;
+        }
+
+        .analyze-btn {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+            border: none;
+            border-radius: 8px;
+            color: white;
+            font-size: 1.1em;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .analyze-btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);
+        }
+
+        .analyze-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .overall-result {
+            border-radius: 12px;
+            padding: 20px;
+            border: 2px solid;
+        }
+
+        .result-value {
+            font-size: 2em;
+            font-weight: bold;
+            margin-bottom: 15px;
+        }
+
+        .result-details {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            color: #94a3b8;
+            font-size: 0.9em;
+        }
+
+        .segments-panel {
+            background: rgba(30, 41, 59, 0.6);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #334155;
+        }
+
+        .segment-item {
+            background: #1e293b;
+            border-radius: 8px;
+            padding: 12px;
+            border-left: 4px solid;
+            margin-bottom: 10px;
+        }
+
+        .corridor-bar-container {
+            display: flex;
+            height: 30px;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+
+        .bar-segment {
+            transition: opacity 0.2s;
+        }
+
+        .bar-labels {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 8px;
+            color: #64748b;
+            font-size: 0.85em;
+        }
+
+        @media (max-width: 900px) {
+            .corridor-content {
+                flex-direction: column;
+            }
+
+            .corridor-panel-section {
+                width: 100%;
+            }
+        }
     </style>
 </head>
 
@@ -340,6 +657,17 @@
             // State for loading weather specifically
             const [weatherLoading, setWeatherLoading] = useState(false);
 
+            // Tab & Banner state
+            const [activeTab, setActiveTab] = useState('flight');
+            const [showBanner, setShowBanner] = useState(true);
+
+            // Corridor simulation state
+            const [pointA, setPointA] = useState(null);
+            const [pointB, setPointB] = useState(null);
+            const [selectingPoint, setSelectingPoint] = useState(null);
+            const [corridorAnalysis, setCorridorAnalysis] = useState(null);
+            const [corridorSettings, setCorridorSettings] = useState({ altitude: 50, segmentCount: 5 });
+
             // 안전한 로직 처리 (osmData는 Overpass API 결과 포함)
             const onSelect = (lat, lon, osmData) => {
                 setLoc({ lat, lon });
@@ -453,183 +781,385 @@
                         </div>
                     </header>
 
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        {/* LEFT COLUMN: Map & Controls */}
-                        <div className="space-y-4">
-                            {/* MAP */}
-                            <div className="relative">
-                                <MapComponent lat={loc.lat} lon={loc.lon} onLocationSelect={onSelect} />
-                                <div className="absolute bottom-4 left-4 bg-slate-900/90 backdrop-blur-md p-3 rounded-lg border border-slate-600 z-[999] shadow-2xl min-w-[240px] transition-all">
-                                    <div className="font-bold text-sm text-white flex items-center gap-2 mb-1">
-                                        <span>📍</span> {addr || '지도에서 위치를 선택하세요'}
+                    {/* 🎉 NEW Feature Banner */}
+                    {showBanner && (
+                        <div className="feature-banner mb-4 rounded-xl">
+                            <span className="banner-icon">🛤️</span>
+                            <span className="banner-text">
+                                <strong>NEW!</strong> 드론 회랑 시뮬레이션 기능이 추가되었습니다! A→B 경로의 위험도를 분석해보세요.
+                            </span>
+                            <button className="banner-close" onClick={() => setShowBanner(false)}>✕</button>
+                        </div>
+                    )}
+
+                    {/* Tab Navigation */}
+                    <nav className="tab-navigation mb-6 rounded-xl overflow-hidden">
+                        <button
+                            className={`tab-btn ${activeTab === 'flight' ? 'active' : ''}`}
+                            onClick={() => setActiveTab('flight')}
+                        >
+                            <span className="tab-label">🚦 비행 판정</span>
+                            <span className="tab-desc">4중 게이트 시스템</span>
+                        </button>
+                        <button
+                            className={`tab-btn ${activeTab === 'corridor' ? 'active' : ''}`}
+                            onClick={() => setActiveTab('corridor')}
+                        >
+                            <span className="tab-label">🛤️ 회랑 시뮬레이션</span>
+                            <span className="tab-new-badge">NEW</span>
+                            <span className="tab-desc">경로 위험도 분석</span>
+                        </button>
+                    </nav>
+
+                    {/* === FLIGHT TAB (기존 콘텐츠) === */}
+                    {activeTab === 'flight' && (
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            {/* LEFT COLUMN: Map & Controls */}
+                            <div className="space-y-4">
+                                {/* MAP */}
+                                <div className="relative">
+                                    <MapComponent lat={loc.lat} lon={loc.lon} onLocationSelect={onSelect} />
+                                    <div className="absolute bottom-4 left-4 bg-slate-900/90 backdrop-blur-md p-3 rounded-lg border border-slate-600 z-[999] shadow-2xl min-w-[240px] transition-all">
+                                        <div className="font-bold text-sm text-white flex items-center gap-2 mb-1">
+                                            <span>📍</span> {addr || '지도에서 위치를 선택하세요'}
+                                        </div>
+                                        {bldg ? (
+                                            <div className="text-xs text-gray-400 space-y-1 border-t border-gray-700 pt-2 mt-2">
+                                                <div className="flex justify-between items-center">
+                                                    <span>🏢 건물 규모</span>
+                                                    <span className="text-white font-bold text-sm">{bldg.estimated_floors}층 <span className="text-gray-500 font-normal">({bldg.estimated_height_m}m)</span></span>
+                                                </div>
+                                                <div className="flex justify-between items-center">
+                                                    <span>🏗️ 용도지역</span>
+                                                    <span className="text-blue-400 font-medium">{bldg.zoning_type}</span>
+                                                </div>
+                                                <div className="flex justify-between items-center">
+                                                    <span>📊 용적/건폐</span>
+                                                    <span className="text-gray-300">{bldg.far_percent}% / {bldg.bcr_percent}%</span>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div className="text-xs text-gray-500 mt-1 pl-6">클릭하여 건물 정보 분석...</div>
+                                        )}
                                     </div>
-                                    {bldg ? (
-                                        <div className="text-xs text-gray-400 space-y-1 border-t border-gray-700 pt-2 mt-2">
-                                            <div className="flex justify-between items-center">
-                                                <span>🏢 건물 규모</span>
-                                                <span className="text-white font-bold text-sm">{bldg.estimated_floors}층 <span className="text-gray-500 font-normal">({bldg.estimated_height_m}m)</span></span>
+                                </div>
+
+                                {/* DRONE & ENV INPUTS */}
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="bg-surface p-4 rounded-xl border border-gray-700">
+                                        <h3 className="text-xs font-bold text-gray-400 mb-2">운용 기체</h3>
+                                        <select className="w-full bg-slate-900 border border-slate-600 p-2 rounded text-white font-bold text-sm outline-none focus:border-blue-500"
+                                            value={form.drone_model} onChange={e => setForm({ ...form, drone_model: e.target.value })}>
+                                            {DRONE_MODELS.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                                        </select>
+                                    </div>
+                                    <div className="bg-surface p-4 rounded-xl border border-gray-700">
+                                        <h3 className="text-xs font-bold text-gray-400 mb-2">현장 변수</h3>
+                                        <div className="flex gap-2">
+                                            <input type="number" placeholder="건물H(m)" className="w-1/2 bg-slate-900 border border-slate-600 p-2 rounded text-white text-sm"
+                                                value={form.building_height} onChange={e => setForm({ ...form, building_height: parseFloat(e.target.value) })} />
+                                            <input type="number" placeholder="도로W(m)" className="w-1/2 bg-slate-900 border border-slate-600 p-2 rounded text-white text-sm"
+                                                value={form.street_width} onChange={e => setForm({ ...form, street_width: parseFloat(e.target.value) })} />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <button onClick={runEval} disabled={loading}
+                                    className="w-full py-4 rounded-xl font-black text-lg text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 shadow-lg transform active:scale-[0.98] transition-all">
+                                    {loading ? '데이터 정밀 분석 중...' : '🚀 비행 가능 여부 판정 (EVALUATE)'}
+                                </button>
+                            </div>
+
+                            {/* RIGHT COLUMN: Weather & Results */}
+                            <div className="space-y-4">
+                                {/* WEATHER GRID (UAV Forecast Style) */}
+                                <div className="bg-slate-800 p-5 rounded-xl border border-gray-700 shadow-lg relative">
+                                    <h3 className="font-bold text-white mb-4 flex items-center justify-between">
+                                        <span className="flex items-center gap-2">🌤️ 실시간 기상 상태 <span className="text-xs font-normal text-gray-400">(Open-Meteo 기반)</span></span>
+                                        <span className="text-[10px] bg-slate-900 px-2 py-1 rounded text-gray-400 font-mono">
+                                            {Number(loc.lat).toFixed(4)}, {Number(loc.lon).toFixed(4)}
+                                        </span>
+                                    </h3>
+
+                                    {weatherLoading && (
+                                        <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm z-10 flex items-center justify-center rounded-xl">
+                                            <div className="text-blue-400 font-bold animate-pulse">데이터 갱신 중...</div>
+                                        </div>
+                                    )}
+
+                                    {w ? (
+                                        <div className={`grid grid-cols-4 gap-2 transition-opacity ${weatherLoading ? 'opacity-50' : 'opacity-100'}`}>
+                                            {/* Row 1 */}
+                                            <div className="grid-card col-span-2 bg-gradient-to-br from-blue-900/40 to-slate-900/40">
+                                                <div className="text-4xl mb-1">{getWeatherIcon(w.weather_code)}</div>
+                                                <div className="text-white font-bold text-lg">
+                                                    {w.weather_code === 0 ? "맑음" : w.weather_code <= 3 ? "구름" : w.weather_code >= 51 ? "비/눈" : "흐림"}
+                                                </div>
                                             </div>
-                                            <div className="flex justify-between items-center">
-                                                <span>🏗️ 용도지역</span>
-                                                <span className="text-blue-400 font-medium">{bldg.zoning_type}</span>
+                                            <div className="grid-card">
+                                                <div className="grid-label">일출/일몰</div>
+                                                <div className="grid-value text-base text-yellow-400">{w.sunrise}</div>
+                                                <div className="grid-sub">{w.sunset}</div>
                                             </div>
-                                            <div className="flex justify-between items-center">
-                                                <span>📊 용적/건폐</span>
-                                                <span className="text-gray-300">{bldg.far_percent}% / {bldg.bcr_percent}%</span>
+                                            <div className="grid-card">
+                                                <div className="grid-label">온도</div>
+                                                <div className="grid-value text-orange-400">{Math.round(w.temperature)}°C</div>
+                                                <div className="grid-sub">이슬점 {Math.round(w.dew_point)}°C</div>
+                                            </div>
+
+                                            {/* Row 2 */}
+                                            <div className="grid-card">
+                                                <div className="grid-label">풍속</div>
+                                                <div className="grid-value text-blue-400">{Number(w.wind_speed).toFixed(1)}</div>
+                                                <div className="grid-sub">m/s</div>
+                                            </div>
+                                            <div className="grid-card">
+                                                <div className="grid-label">돌풍</div>
+                                                <div className="grid-value text-yellow-500">{Number(w.gust_speed).toFixed(1)}</div>
+                                                <div className="grid-sub">m/s</div>
+                                            </div>
+                                            <div className="grid-card">
+                                                <div className="grid-label">풍향</div>
+                                                <div className="text-2xl" style={{ transform: 'rotate(' + w.wind_direction + 'deg)' }}>⬆️</div>
+                                                <div className="grid-sub">{w.wind_direction}°</div>
+                                            </div>
+                                            <div className="grid-card">
+                                                <div className="grid-label">강수확률</div>
+                                                <div className="grid-value text-blue-300">{w.precipitation_prob}%</div>
+                                                <div className="grid-sub">습도 {w.humidity}%</div>
+                                            </div>
+
+                                            {/* Row 3 */}
+                                            <div className="grid-card">
+                                                <div className="grid-label">구름양</div>
+                                                <div className="grid-value text-gray-300">{w.cloud_cover}%</div>
+                                                <div className="grid-sub">Ceiling Info</div>
+                                            </div>
+                                            <div className="grid-card">
+                                                <div className="grid-label">시정</div>
+                                                <div className="grid-value text-green-400">{Number(w.visibility).toFixed(1)}</div>
+                                                <div className="grid-sub">km</div>
+                                            </div>
+                                            <div className="grid-card">
+                                                <div className="grid-label">위성(GPS)</div>
+                                                <div className="grid-value text-purple-400">{form.gps_locked}</div>
+                                                <div className="grid-sub">GLO {form.glonass_locked}</div>
+                                            </div>
+                                            <div className="grid-card">
+                                                <div className="grid-label">Kp 지수</div>
+                                                <div className="grid-value text-red-400">{w.kp_index}</div>
+                                                <div className="grid-sub">전파방해</div>
                                             </div>
                                         </div>
-                                    ) : (
-                                        <div className="text-xs text-gray-500 mt-1 pl-6">클릭하여 건물 정보 분석...</div>
-                                    )}
+                                    ) : (<div className="text-center py-10 text-gray-500">데이터 로딩 중...</div>)}
                                 </div>
-                            </div>
 
-                            {/* DRONE & ENV INPUTS */}
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div className="bg-surface p-4 rounded-xl border border-gray-700">
-                                    <h3 className="text-xs font-bold text-gray-400 mb-2">운용 기체</h3>
-                                    <select className="w-full bg-slate-900 border border-slate-600 p-2 rounded text-white font-bold text-sm outline-none focus:border-blue-500"
-                                        value={form.drone_model} onChange={e => setForm({ ...form, drone_model: e.target.value })}>
-                                        {DRONE_MODELS.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-                                    </select>
-                                </div>
-                                <div className="bg-surface p-4 rounded-xl border border-gray-700">
-                                    <h3 className="text-xs font-bold text-gray-400 mb-2">현장 변수</h3>
-                                    <div className="flex gap-2">
-                                        <input type="number" placeholder="건물H(m)" className="w-1/2 bg-slate-900 border border-slate-600 p-2 rounded text-white text-sm"
-                                            value={form.building_height} onChange={e => setForm({ ...form, building_height: parseFloat(e.target.value) })} />
-                                        <input type="number" placeholder="도로W(m)" className="w-1/2 bg-slate-900 border border-slate-600 p-2 rounded text-white text-sm"
-                                            value={form.street_width} onChange={e => setForm({ ...form, street_width: parseFloat(e.target.value) })} />
+                                {/* EVALUATION RESULTS */}
+                                {evalRes && (
+                                    <div className="space-y-4 animate-fade-in">
+                                        <div className={`p-6 rounded-2xl border-4 text-center shadow-2xl ${getStatusColor(evalRes.final_judgment)}`}>
+                                            <div className="text-sm font-bold opacity-70 mb-1">FINAL DECISION</div>
+                                            <div className="text-5xl font-black tracking-tighter">{evalRes.final_judgment}</div>
+                                        </div>
+
+                                        <div className="bg-surface p-5 rounded-xl border border-gray-700">
+                                            <h3 className="font-bold text-white mb-3">📝 상세 판정 사유서</h3>
+                                            <div className="space-y-2">
+                                                {evalRes.gates.map((g, i) => (
+                                                    <div key={i} className="p-3 bg-slate-900/50 rounded border border-slate-700/50 flex flex-col gap-1">
+                                                        <div className="flex justify-between items-center">
+                                                            <span className="font-bold text-gray-300 text-sm">{g.gate}</span>
+                                                            <span className={`text-xs font-bold px-2 py-0.5 rounded ${getStatusColor(g.status).replace('border-green-500', 'border-transparent')}`}>
+                                                                {g.status}
+                                                            </span>
+                                                        </div>
+                                                        <div className="text-white text-sm pl-2 border-l-2 border-slate-600">
+                                                            {g.reason}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        <div className="bg-blue-900/20 p-3 rounded text-xs text-gray-400 grid grid-cols-2 gap-2">
+                                            <div>EWS(빌딩풍): <b className="text-white">{evalRes.ews}m/s</b></div>
+                                            <div>Fcanyon: <b className="text-white">x{evalRes.urban_factors.Fcanyon}</b></div>
+                                        </div>
                                     </div>
-                                </div>
+                                )}
                             </div>
+                        </div>
+                    </div>
+            )
+        }
 
-                            <button onClick={runEval} disabled={loading}
-                                className="w-full py-4 rounded-xl font-black text-lg text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 shadow-lg transform active:scale-[0.98] transition-all">
-                                {loading ? '데이터 정밀 분석 중...' : '🚀 비행 가능 여부 판정 (EVALUATE)'}
+        {/* === CORRIDOR TAB === */ }
+        {
+            activeTab === 'corridor' && (
+                <div className="corridor-content">
+                    <div className="corridor-map-section">
+                        <h3 className="text-white font-bold mb-2">🗺️ 경로 설정</h3>
+                        <p className="text-gray-400 text-sm mb-4">지도에서 출발점(A)과 도착점(B)을 선택하세요</p>
+
+                        <div className="point-selection">
+                            <button
+                                className={`point-btn ${selectingPoint === 'A' ? 'active' : ''} ${pointA ? 'selected' : ''}`}
+                                onClick={() => setSelectingPoint('A')}
+                            >
+                                🅰️ 출발점 {pointA ? `(${pointA.lat.toFixed(4)}, ${pointA.lon.toFixed(4)})` : '(미선택)'}
+                            </button>
+                            <span className="point-arrow">→</span>
+                            <button
+                                className={`point-btn ${selectingPoint === 'B' ? 'active' : ''} ${pointB ? 'selected' : ''}`}
+                                onClick={() => setSelectingPoint('B')}
+                            >
+                                🅱️ 도착점 {pointB ? `(${pointB.lat.toFixed(4)}, ${pointB.lon.toFixed(4)})` : '(미선택)'}
                             </button>
                         </div>
 
-                        {/* RIGHT COLUMN: Weather & Results */}
-                        <div className="space-y-4">
-                            {/* WEATHER GRID (UAV Forecast Style) */}
-                            <div className="bg-slate-800 p-5 rounded-xl border border-gray-700 shadow-lg relative">
-                                <h3 className="font-bold text-white mb-4 flex items-center justify-between">
-                                    <span className="flex items-center gap-2">🌤️ 실시간 기상 상태 <span className="text-xs font-normal text-gray-400">(Open-Meteo 기반)</span></span>
-                                    <span className="text-[10px] bg-slate-900 px-2 py-1 rounded text-gray-400 font-mono">
-                                        {Number(loc.lat).toFixed(4)}, {Number(loc.lon).toFixed(4)}
-                                    </span>
-                                </h3>
-
-                                {weatherLoading && (
-                                    <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm z-10 flex items-center justify-center rounded-xl">
-                                        <div className="text-blue-400 font-bold animate-pulse">데이터 갱신 중...</div>
-                                    </div>
-                                )}
-
-                                {w ? (
-                                    <div className={`grid grid-cols-4 gap-2 transition-opacity ${weatherLoading ? 'opacity-50' : 'opacity-100'}`}>
-                                        {/* Row 1 */}
-                                        <div className="grid-card col-span-2 bg-gradient-to-br from-blue-900/40 to-slate-900/40">
-                                            <div className="text-4xl mb-1">{getWeatherIcon(w.weather_code)}</div>
-                                            <div className="text-white font-bold text-lg">
-                                                {w.weather_code === 0 ? "맑음" : w.weather_code <= 3 ? "구름" : w.weather_code >= 51 ? "비/눈" : "흐림"}
-                                            </div>
-                                        </div>
-                                        <div className="grid-card">
-                                            <div className="grid-label">일출/일몰</div>
-                                            <div className="grid-value text-base text-yellow-400">{w.sunrise}</div>
-                                            <div className="grid-sub">{w.sunset}</div>
-                                        </div>
-                                        <div className="grid-card">
-                                            <div className="grid-label">온도</div>
-                                            <div className="grid-value text-orange-400">{Math.round(w.temperature)}°C</div>
-                                            <div className="grid-sub">이슬점 {Math.round(w.dew_point)}°C</div>
-                                        </div>
-
-                                        {/* Row 2 */}
-                                        <div className="grid-card">
-                                            <div className="grid-label">풍속</div>
-                                            <div className="grid-value text-blue-400">{Number(w.wind_speed).toFixed(1)}</div>
-                                            <div className="grid-sub">m/s</div>
-                                        </div>
-                                        <div className="grid-card">
-                                            <div className="grid-label">돌풍</div>
-                                            <div className="grid-value text-yellow-500">{Number(w.gust_speed).toFixed(1)}</div>
-                                            <div className="grid-sub">m/s</div>
-                                        </div>
-                                        <div className="grid-card">
-                                            <div className="grid-label">풍향</div>
-                                            <div className="text-2xl" style={{ transform: 'rotate(' + w.wind_direction + 'deg)' }}>⬆️</div>
-                                            <div className="grid-sub">{w.wind_direction}°</div>
-                                        </div>
-                                        <div className="grid-card">
-                                            <div className="grid-label">강수확률</div>
-                                            <div className="grid-value text-blue-300">{w.precipitation_prob}%</div>
-                                            <div className="grid-sub">습도 {w.humidity}%</div>
-                                        </div>
-
-                                        {/* Row 3 */}
-                                        <div className="grid-card">
-                                            <div className="grid-label">구름양</div>
-                                            <div className="grid-value text-gray-300">{w.cloud_cover}%</div>
-                                            <div className="grid-sub">Ceiling Info</div>
-                                        </div>
-                                        <div className="grid-card">
-                                            <div className="grid-label">시정</div>
-                                            <div className="grid-value text-green-400">{Number(w.visibility).toFixed(1)}</div>
-                                            <div className="grid-sub">km</div>
-                                        </div>
-                                        <div className="grid-card">
-                                            <div className="grid-label">위성(GPS)</div>
-                                            <div className="grid-value text-purple-400">{form.gps_locked}</div>
-                                            <div className="grid-sub">GLO {form.glonass_locked}</div>
-                                        </div>
-                                        <div className="grid-card">
-                                            <div className="grid-label">Kp 지수</div>
-                                            <div className="grid-value text-red-400">{w.kp_index}</div>
-                                            <div className="grid-sub">전파방해</div>
-                                        </div>
-                                    </div>
-                                ) : (<div className="text-center py-10 text-gray-500">데이터 로딩 중...</div>)}
+                        {selectingPoint && (
+                            <div className="selection-hint">
+                                👆 지도를 클릭하여 {selectingPoint === 'A' ? '출발점' : '도착점'}을 선택하세요
                             </div>
+                        )}
 
-                            {/* EVALUATION RESULTS */}
-                            {evalRes && (
-                                <div className="space-y-4 animate-fade-in">
-                                    <div className={`p-6 rounded-2xl border-4 text-center shadow-2xl ${getStatusColor(evalRes.final_judgment)}`}>
-                                        <div className="text-sm font-bold opacity-70 mb-1">FINAL DECISION</div>
-                                        <div className="text-5xl font-black tracking-tighter">{evalRes.final_judgment}</div>
-                                    </div>
-
-                                    <div className="bg-surface p-5 rounded-xl border border-gray-700">
-                                        <h3 className="font-bold text-white mb-3">📝 상세 판정 사유서</h3>
-                                        <div className="space-y-2">
-                                            {evalRes.gates.map((g, i) => (
-                                                <div key={i} className="p-3 bg-slate-900/50 rounded border border-slate-700/50 flex flex-col gap-1">
-                                                    <div className="flex justify-between items-center">
-                                                        <span className="font-bold text-gray-300 text-sm">{g.gate}</span>
-                                                        <span className={`text-xs font-bold px-2 py-0.5 rounded ${getStatusColor(g.status).replace('border-green-500', 'border-transparent')}`}>
-                                                            {g.status}
-                                                        </span>
-                                                    </div>
-                                                    <div className="text-white text-sm pl-2 border-l-2 border-slate-600">
-                                                        {g.reason}
-                                                    </div>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </div>
-
-                                    <div className="bg-blue-900/20 p-3 rounded text-xs text-gray-400 grid grid-cols-2 gap-2">
-                                        <div>EWS(빌딩풍): <b className="text-white">{evalRes.ews}m/s</b></div>
-                                        <div>Fcanyon: <b className="text-white">x{evalRes.urban_factors.Fcanyon}</b></div>
-                                    </div>
-                                </div>
-                            )}
+                        <div className="map-wrapper shadow-2xl" style={{ height: '400px' }}>
+                            <MapComponent
+                                lat={pointA ? pointA.lat : loc.lat}
+                                lon={pointA ? pointA.lon : loc.lon}
+                                onLocationSelect={(lat, lon) => {
+                                    if (selectingPoint === 'A') {
+                                        setPointA({ lat, lon });
+                                        setSelectingPoint(null);
+                                        setCorridorAnalysis(null);
+                                    } else if (selectingPoint === 'B') {
+                                        setPointB({ lat, lon });
+                                        setSelectingPoint(null);
+                                        setCorridorAnalysis(null);
+                                    }
+                                }}
+                            />
                         </div>
                     </div>
+
+                    <div className="corridor-panel-section">
+                        <div className="settings-panel">
+                            <h3 className="text-white font-bold mb-4">⚙️ 비행 설정</h3>
+                            <div className="setting-row">
+                                <label>비행 고도:</label>
+                                <input type="number" value={corridorSettings.altitude}
+                                    onChange={e => setCorridorSettings({ ...corridorSettings, altitude: parseInt(e.target.value) })} />
+                                <span className="text-gray-400">m</span>
+                            </div>
+                            <div className="setting-row">
+                                <label>분석 구간:</label>
+                                <select value={corridorSettings.segmentCount}
+                                    onChange={e => setCorridorSettings({ ...corridorSettings, segmentCount: parseInt(e.target.value) })}>
+                                    <option value={3}>3 구간</option>
+                                    <option value={5}>5 구간</option>
+                                    <option value={10}>10 구간</option>
+                                </select>
+                            </div>
+                            <button
+                                className="analyze-btn"
+                                disabled={!pointA || !pointB}
+                                onClick={() => {
+                                    // 모의 분석 (백엔드 API 미구현 대비)
+                                    const segments = [];
+                                    for (let i = 0; i < corridorSettings.segmentCount; i++) {
+                                        const riskLevel = Math.random();
+                                        let status = 'GO';
+                                        if (riskLevel > 0.7) status = 'NO-GO';
+                                        else if (riskLevel > 0.4) status = 'RESTRICT';
+                                        segments.push({
+                                            id: i + 1, status,
+                                            wind: (Math.random() * 8 + 2).toFixed(1),
+                                            building: Math.floor(Math.random() * 30 + 10)
+                                        });
+                                    }
+                                    const goCount = segments.filter(s => s.status === 'GO').length;
+                                    const nogoCount = segments.filter(s => s.status === 'NO-GO').length;
+                                    let overall = 'GO';
+                                    if (nogoCount > 0) overall = 'NO-GO';
+                                    else if (goCount < corridorSettings.segmentCount / 2) overall = 'RESTRICT';
+
+                                    const distance = Math.sqrt(
+                                        Math.pow((pointB.lat - pointA.lat) * 111000, 2) +
+                                        Math.pow((pointB.lon - pointA.lon) * 88000, 2)
+                                    );
+                                    setCorridorAnalysis({
+                                        overall, segments,
+                                        distance: Math.round(distance),
+                                        time: Math.round(distance / 10 / 60 * 10) / 10
+                                    });
+                                }}
+                            >
+                                {(!pointA || !pointB) ? '📍 출발/도착점을 선택하세요' : '🚀 회랑 분석 시작'}
+                            </button>
+                        </div>
+
+                        {corridorAnalysis && (
+                            <>
+                                <div className="overall-result" style={{
+                                    backgroundColor: corridorAnalysis.overall === 'GO' ? 'rgba(34,197,94,0.2)' :
+                                        corridorAnalysis.overall === 'RESTRICT' ? 'rgba(234,179,8,0.2)' : 'rgba(239,68,68,0.2)',
+                                    borderColor: corridorAnalysis.overall === 'GO' ? '#22c55e' :
+                                        corridorAnalysis.overall === 'RESTRICT' ? '#eab308' : '#ef4444'
+                                }}>
+                                    <h3 className="text-white text-sm font-bold mb-2">종합 판정</h3>
+                                    <div className="result-value" style={{
+                                        color: corridorAnalysis.overall === 'GO' ? '#22c55e' :
+                                            corridorAnalysis.overall === 'RESTRICT' ? '#eab308' : '#ef4444'
+                                    }}>
+                                        {corridorAnalysis.overall === 'GO' ? '🟢' : corridorAnalysis.overall === 'RESTRICT' ? '🟡' : '🔴'} {corridorAnalysis.overall}
+                                    </div>
+                                    <div className="result-details">
+                                        <span>📏 {corridorAnalysis.distance}m</span>
+                                        <span>⏱️ {corridorAnalysis.time}분</span>
+                                    </div>
+                                </div>
+
+                                <div className="segments-panel">
+                                    <h3 className="text-white font-bold mb-3">📊 구간별 위험도</h3>
+                                    {corridorAnalysis.segments.map(seg => (
+                                        <div key={seg.id} className="segment-item" style={{
+                                            borderColor: seg.status === 'GO' ? '#22c55e' : seg.status === 'RESTRICT' ? '#eab308' : '#ef4444'
+                                        }}>
+                                            <div className="flex justify-between text-sm font-bold text-white">
+                                                <span>구간 {seg.id}</span>
+                                                <span style={{ color: seg.status === 'GO' ? '#22c55e' : seg.status === 'RESTRICT' ? '#eab308' : '#ef4444' }}>
+                                                    {seg.status}
+                                                </span>
+                                            </div>
+                                            <div className="text-xs text-gray-400 mt-1">
+                                                💨 풍속: {seg.wind}m/s | 🏢 건물: {seg.building}m
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                <div className="settings-panel">
+                                    <h3 className="text-white font-bold mb-3">🛤️ 회랑 시각화</h3>
+                                    <div className="corridor-bar-container">
+                                        {corridorAnalysis.segments.map(seg => (
+                                            <div key={seg.id} className="bar-segment" style={{
+                                                backgroundColor: seg.status === 'GO' ? '#22c55e' : seg.status === 'RESTRICT' ? '#eab308' : '#ef4444',
+                                                width: `${100 / corridorAnalysis.segments.length}%`
+                                            }} />
+                                        ))}
+                                    </div>
+                                    <div className="bar-labels">
+                                        <span>A 출발</span>
+                                        <span>B 도착</span>
+                                    </div>
+                                </div>
+                            </>
+                        )}
+                    </div>
                 </div>
+            )
+        }
+                </div >
             );
         }
 
