@@ -1,11 +1,22 @@
 import { useState, useEffect, useCallback } from 'react'
 import MapView from './components/MapView'
+import CorridorSimulation from './components/CorridorSimulation'
 import './App.css'
 
 // API 기본 URL
 const API_URL = 'http://localhost:8000'
 
+// 탭 정의
+const TABS = [
+    { id: 'flight', label: '🚦 비행 판정', description: '4중 게이트 시스템' },
+    { id: 'corridor', label: '🛤️ 회랑 시뮬레이션', description: '경로 위험도 분석', isNew: true }
+]
+
 function App() {
+    // 탭 상태 관리
+    const [activeTab, setActiveTab] = useState('flight')
+    const [showBanner, setShowBanner] = useState(true)
+
     // 상태 관리
     const [location, setLocation] = useState({ lat: 37.5665, lon: 126.9780 })
     const [weather, setWeather] = useState(null)
@@ -127,259 +138,293 @@ function App() {
                 <p>4중 게이트 시스템 + 실시간 무료 데이터 (VWorld + Open-Meteo)</p>
             </header>
 
-            <main className="main">
-                {/* 좌측: 지도 + 입력 */}
-                <section className="left-panel">
-                    {/* 지도 영역 (VWorld) */}
-                    <div className="map-container">
-                        <div className="map-wrapper" style={{ height: '350px' }}>
-                            <MapView
-                                lat={location.lat}
-                                lon={location.lon}
-                                onLocationSelect={handleLocationSelect}
-                            />
+            {/* 🎉 새 기능 배너 */}
+            {showBanner && (
+                <div className="feature-banner">
+                    <span className="banner-icon">🛤️</span>
+                    <span className="banner-text">
+                        <strong>NEW!</strong> 드론 회랑 시뮬레이션 기능이 추가되었습니다! A→B 경로의 위험도를 분석해보세요.
+                    </span>
+                    <button className="banner-close" onClick={() => setShowBanner(false)}>✕</button>
+                </div>
+            )}
+
+            {/* 탭 네비게이션 */}
+            <nav className="tab-navigation">
+                {TABS.map(tab => (
+                    <button
+                        key={tab.id}
+                        className={`tab-btn ${activeTab === tab.id ? 'active' : ''}`}
+                        onClick={() => setActiveTab(tab.id)}
+                    >
+                        <span className="tab-label">{tab.label}</span>
+                        {tab.isNew && <span className="tab-new-badge">NEW</span>}
+                        <span className="tab-desc">{tab.description}</span>
+                    </button>
+                ))}
+            </nav>
+
+            {/* 비행 판정 탭 (기존 콘텐츠) */}
+            {activeTab === 'flight' && (
+                <main className="main">
+                    {/* 좌측: 지도 + 입력 */}
+                    <section className="left-panel">
+                        {/* 지도 영역 (VWorld) */}
+                        <div className="map-container">
+                            <div className="map-wrapper" style={{ height: '350px' }}>
+                                <MapView
+                                    lat={location.lat}
+                                    lon={location.lon}
+                                    onLocationSelect={handleLocationSelect}
+                                />
+                            </div>
+
+                            <div className="map-info" style={{ padding: '15px' }}>
+                                <span>📍 선택 위치: {location.lat.toFixed(4)}, {location.lon.toFixed(4)}</span>
+                                {buildingInfo && (
+                                    <span className="building-badge" style={{ marginLeft: '10px', background: '#3b82f6', padding: '3px 8px', borderRadius: '4px', fontSize: '0.9em' }}>
+                                        🏢 {buildingInfo.zoning_type} (예측: {buildingInfo.estimated_floors}층)
+                                    </span>
+                                )}
+                            </div>
                         </div>
 
-                        <div className="map-info" style={{ padding: '15px' }}>
-                            <span>📍 선택 위치: {location.lat.toFixed(4)}, {location.lon.toFixed(4)}</span>
-                            {buildingInfo && (
-                                <span className="building-badge" style={{ marginLeft: '10px', background: '#3b82f6', padding: '3px 8px', borderRadius: '4px', fontSize: '0.9em' }}>
-                                    🏢 {buildingInfo.zoning_type} (예측: {buildingInfo.estimated_floors}층)
-                                </span>
+                        {/* 입력 폼 */}
+                        <div className="input-form">
+                            <h3>🏙️ 현장 정보</h3>
+
+                            <div className="form-row">
+                                <label>
+                                    건물 높이 (H):
+                                    <div className="input-with-hint" style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                        <input
+                                            type="number"
+                                            value={formData.building_height}
+                                            onChange={e => setFormData(prev => ({ ...prev, building_height: parseFloat(e.target.value) }))}
+                                        />
+                                        <span>m</span>
+                                    </div>
+                                    {buildingLoading && <small className="hint" style={{ color: '#eab308' }}>🔍 예측 중...</small>}
+                                </label>
+                                <label>
+                                    도로 폭 (W):
+                                    <div className="input-with-hint" style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                        <input
+                                            type="number"
+                                            value={formData.street_width}
+                                            onChange={e => setFormData(prev => ({ ...prev, street_width: parseFloat(e.target.value) }))}
+                                        />
+                                        <span>m</span>
+                                    </div>
+                                </label>
+                            </div>
+
+                            <div className="form-row">
+                                <label>
+                                    H/W 비율:
+                                    <strong>{(formData.building_height / formData.street_width).toFixed(2)}</strong>
+                                </label>
+                                <label>
+                                    풍향 정렬:
+                                    <select
+                                        value={formData.wind_alignment}
+                                        onChange={e => setFormData(prev => ({ ...prev, wind_alignment: e.target.value }))}
+                                    >
+                                        <option value="일치">일치 (풍향=골목)</option>
+                                        <option value="직각">직각</option>
+                                        <option value="불명">불명</option>
+                                    </select>
+                                </label>
+                            </div>
+
+                            <div className="form-row">
+                                <label>
+                                    임무 고도:
+                                    <input
+                                        type="number"
+                                        value={formData.mission_altitude}
+                                        onChange={e => setFormData(prev => ({ ...prev, mission_altitude: parseFloat(e.target.value) }))}
+                                    /> m
+                                </label>
+                                <label>
+                                    GPS 잠금:
+                                    <input
+                                        type="number"
+                                        value={formData.gps_locked}
+                                        onChange={e => setFormData(prev => ({ ...prev, gps_locked: parseInt(e.target.value) }))}
+                                    /> 개
+                                </label>
+                            </div>
+
+                            <h3>🚫 하드스탑 체크</h3>
+                            <div className="form-row checkboxes">
+                                <label className="checkbox-label">
+                                    <input
+                                        type="checkbox"
+                                        checked={formData.no_fly_zone}
+                                        onChange={e => setFormData(prev => ({ ...prev, no_fly_zone: e.target.checked }))}
+                                    />
+                                    비행금지구역
+                                </label>
+                                <label className="checkbox-label">
+                                    <input
+                                        type="checkbox"
+                                        checked={formData.crowd_area}
+                                        onChange={e => setFormData(prev => ({ ...prev, crowd_area: e.target.checked }))}
+                                    />
+                                    인파밀집지역
+                                </label>
+                            </div>
+
+                            <button
+                                onClick={performEvaluation}
+                                className="btn btn-primary"
+                                disabled={loading}
+                            >
+                                {loading ? '⏳ 판정 중...' : '🚀 비행 가능 여부 판정'}
+                            </button>
+                        </div>
+                    </section>
+
+                    {/* 우측: 결과 */}
+                    <section className="right-panel">
+                        {/* 기상 정보 (기존과 동일) */}
+                        <div className="weather-panel">
+                            <h3>🌤️ 실시간 기상</h3>
+                            {weather ? (
+                                <div className="weather-grid">
+                                    <div className="weather-item">
+                                        <span className="label">🌡️ 풍속</span>
+                                        <span className="value">{weather.wind_speed?.toFixed(1)} m/s</span>
+                                    </div>
+                                    <div className="weather-item">
+                                        <span className="label">💨 돌풍</span>
+                                        <span className="value">{weather.gust_speed?.toFixed(1)} m/s</span>
+                                    </div>
+                                    <div className="weather-item">
+                                        <span className="label">👁️ 시정</span>
+                                        <span className="value">{weather.visibility?.toFixed(1)} km</span>
+                                    </div>
+                                    <div className="weather-item">
+                                        <span className="label">🌧️ 강수</span>
+                                        <span className="value">{weather.precipitation_prob}%</span>
+                                    </div>
+                                    <div className="weather-item">
+                                        <span className="label">📡 Kp</span>
+                                        <span className="value">{weather.kp_index}</span>
+                                    </div>
+                                    <div className="weather-item">
+                                        <span className="label">🌡️ 기온</span>
+                                        <span className="value">{weather.temperature}°C</span>
+                                    </div>
+                                </div>
+                            ) : (
+                                <p>기상 정보 로딩 중...</p>
                             )}
                         </div>
-                    </div>
 
-                    {/* 입력 폼 */}
-                    <div className="input-form">
-                        <h3>🏙️ 현장 정보</h3>
-
-                        <div className="form-row">
-                            <label>
-                                건물 높이 (H):
-                                <div className="input-with-hint" style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                                    <input
-                                        type="number"
-                                        value={formData.building_height}
-                                        onChange={e => setFormData(prev => ({ ...prev, building_height: parseFloat(e.target.value) }))}
-                                    />
-                                    <span>m</span>
-                                </div>
-                                {buildingLoading && <small className="hint" style={{ color: '#eab308' }}>🔍 예측 중...</small>}
-                            </label>
-                            <label>
-                                도로 폭 (W):
-                                <div className="input-with-hint" style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                                    <input
-                                        type="number"
-                                        value={formData.street_width}
-                                        onChange={e => setFormData(prev => ({ ...prev, street_width: parseFloat(e.target.value) }))}
-                                    />
-                                    <span>m</span>
-                                </div>
-                            </label>
-                        </div>
-
-                        <div className="form-row">
-                            <label>
-                                H/W 비율:
-                                <strong>{(formData.building_height / formData.street_width).toFixed(2)}</strong>
-                            </label>
-                            <label>
-                                풍향 정렬:
-                                <select
-                                    value={formData.wind_alignment}
-                                    onChange={e => setFormData(prev => ({ ...prev, wind_alignment: e.target.value }))}
-                                >
-                                    <option value="일치">일치 (풍향=골목)</option>
-                                    <option value="직각">직각</option>
-                                    <option value="불명">불명</option>
-                                </select>
-                            </label>
-                        </div>
-
-                        <div className="form-row">
-                            <label>
-                                임무 고도:
-                                <input
-                                    type="number"
-                                    value={formData.mission_altitude}
-                                    onChange={e => setFormData(prev => ({ ...prev, mission_altitude: parseFloat(e.target.value) }))}
-                                /> m
-                            </label>
-                            <label>
-                                GPS 잠금:
-                                <input
-                                    type="number"
-                                    value={formData.gps_locked}
-                                    onChange={e => setFormData(prev => ({ ...prev, gps_locked: parseInt(e.target.value) }))}
-                                /> 개
-                            </label>
-                        </div>
-
-                        <h3>🚫 하드스탑 체크</h3>
-                        <div className="form-row checkboxes">
-                            <label className="checkbox-label">
-                                <input
-                                    type="checkbox"
-                                    checked={formData.no_fly_zone}
-                                    onChange={e => setFormData(prev => ({ ...prev, no_fly_zone: e.target.checked }))}
-                                />
-                                비행금지구역
-                            </label>
-                            <label className="checkbox-label">
-                                <input
-                                    type="checkbox"
-                                    checked={formData.crowd_area}
-                                    onChange={e => setFormData(prev => ({ ...prev, crowd_area: e.target.checked }))}
-                                />
-                                인파밀집지역
-                            </label>
-                        </div>
-
-                        <button
-                            onClick={performEvaluation}
-                            className="btn btn-primary"
-                            disabled={loading}
-                        >
-                            {loading ? '⏳ 판정 중...' : '🚀 비행 가능 여부 판정'}
-                        </button>
-                    </div>
-                </section>
-
-                {/* 우측: 결과 */}
-                <section className="right-panel">
-                    {/* 기상 정보 (기존과 동일) */}
-                    <div className="weather-panel">
-                        <h3>🌤️ 실시간 기상</h3>
-                        {weather ? (
-                            <div className="weather-grid">
-                                <div className="weather-item">
-                                    <span className="label">🌡️ 풍속</span>
-                                    <span className="value">{weather.wind_speed?.toFixed(1)} m/s</span>
-                                </div>
-                                <div className="weather-item">
-                                    <span className="label">💨 돌풍</span>
-                                    <span className="value">{weather.gust_speed?.toFixed(1)} m/s</span>
-                                </div>
-                                <div className="weather-item">
-                                    <span className="label">👁️ 시정</span>
-                                    <span className="value">{weather.visibility?.toFixed(1)} km</span>
-                                </div>
-                                <div className="weather-item">
-                                    <span className="label">🌧️ 강수</span>
-                                    <span className="value">{weather.precipitation_prob}%</span>
-                                </div>
-                                <div className="weather-item">
-                                    <span className="label">📡 Kp</span>
-                                    <span className="value">{weather.kp_index}</span>
-                                </div>
-                                <div className="weather-item">
-                                    <span className="label">🌡️ 기온</span>
-                                    <span className="value">{weather.temperature}°C</span>
-                                </div>
-                            </div>
-                        ) : (
-                            <p>기상 정보 로딩 중...</p>
-                        )}
-                    </div>
-
-                    {/* 게이트 상태 */}
-                    {evaluation && (
-                        <>
-                            <div className="gates-panel">
-                                <h3>🚦 게이트 상태</h3>
-                                <div className="gates-grid">
-                                    {evaluation.gates.map((gate, idx) => (
-                                        <div
-                                            key={idx}
-                                            className="gate-item"
-                                            style={{ borderColor: getStatusColor(gate.status) }}
-                                        >
-                                            <div className="gate-header">
-                                                <span className="gate-name">{gate.gate}</span>
-                                                <span className="gate-emoji">{getStatusEmoji(gate.status)}</span>
-                                            </div>
+                        {/* 게이트 상태 */}
+                        {evaluation && (
+                            <>
+                                <div className="gates-panel">
+                                    <h3>🚦 게이트 상태</h3>
+                                    <div className="gates-grid">
+                                        {evaluation.gates.map((gate, idx) => (
                                             <div
-                                                className="gate-status"
-                                                style={{ color: getStatusColor(gate.status) }}
+                                                key={idx}
+                                                className="gate-item"
+                                                style={{ borderColor: getStatusColor(gate.status) }}
                                             >
-                                                {gate.status}
+                                                <div className="gate-header">
+                                                    <span className="gate-name">{gate.gate}</span>
+                                                    <span className="gate-emoji">{getStatusEmoji(gate.status)}</span>
+                                                </div>
+                                                <div
+                                                    className="gate-status"
+                                                    style={{ color: getStatusColor(gate.status) }}
+                                                >
+                                                    {gate.status}
+                                                </div>
+                                                <div className="gate-reason">{gate.reason}</div>
                                             </div>
-                                            <div className="gate-reason">{gate.reason}</div>
-                                        </div>
-                                    ))}
+                                        ))}
+                                    </div>
                                 </div>
-                            </div>
 
-                            {/* EWS 정보 */}
-                            <div className="ews-panel">
-                                <h3>📊 도시 보정 결과</h3>
-                                <div className="ews-info">
-                                    <p><strong>EWS (Equivalent Wind Speed):</strong> {evaluation.ews} m/s</p>
-                                    <p><strong>Fcanyon:</strong> {evaluation.urban_factors.Fcanyon}</p>
-                                    <p><strong>H/W 비율:</strong> {evaluation.urban_factors.H_W_ratio}</p>
+                                {/* EWS 정보 */}
+                                <div className="ews-panel">
+                                    <h3>📊 도시 보정 결과</h3>
+                                    <div className="ews-info">
+                                        <p><strong>EWS (Equivalent Wind Speed):</strong> {evaluation.ews} m/s</p>
+                                        <p><strong>Fcanyon:</strong> {evaluation.urban_factors.Fcanyon}</p>
+                                        <p><strong>H/W 비율:</strong> {evaluation.urban_factors.H_W_ratio}</p>
+                                    </div>
                                 </div>
-                            </div>
 
-                            {/* 기종별 판정 */}
-                            <div className="drone-panel">
-                                <h3>🚁 기종별 판정</h3>
-                                <div className="drone-grid">
-                                    {Object.entries(evaluation.drone_judgments).map(([type, status]) => (
-                                        <div
-                                            key={type}
-                                            className="drone-item"
-                                            style={{ backgroundColor: getStatusColor(status) + '20', borderColor: getStatusColor(status) }}
-                                        >
-                                            <div className="drone-type">{type}</div>
-                                            <div className="drone-status" style={{ color: getStatusColor(status) }}>
-                                                {getStatusEmoji(status)} {status}
+                                {/* 기종별 판정 */}
+                                <div className="drone-panel">
+                                    <h3>🚁 기종별 판정</h3>
+                                    <div className="drone-grid">
+                                        {Object.entries(evaluation.drone_judgments).map(([type, status]) => (
+                                            <div
+                                                key={type}
+                                                className="drone-item"
+                                                style={{ backgroundColor: getStatusColor(status) + '20', borderColor: getStatusColor(status) }}
+                                            >
+                                                <div className="drone-type">{type}</div>
+                                                <div className="drone-status" style={{ color: getStatusColor(status) }}>
+                                                    {getStatusEmoji(status)} {status}
+                                                </div>
                                             </div>
-                                        </div>
-                                    ))}
+                                        ))}
+                                    </div>
                                 </div>
-                            </div>
 
-                            {/* 층별풍 */}
-                            <div className="layer-wind-panel">
-                                <h3>📈 층별풍 (5m 간격)</h3>
-                                <div className="layer-wind-grid">
-                                    {Object.entries(evaluation.layer_winds).map(([alt, speed]) => (
-                                        <div key={alt} className="layer-item">
-                                            <span className="layer-alt">{alt}</span>
-                                            <span className="layer-speed">{speed} m/s</span>
-                                        </div>
-                                    ))}
+                                {/* 층별풍 */}
+                                <div className="layer-wind-panel">
+                                    <h3>📈 층별풍 (5m 간격)</h3>
+                                    <div className="layer-wind-grid">
+                                        {Object.entries(evaluation.layer_winds).map(([alt, speed]) => (
+                                            <div key={alt} className="layer-item">
+                                                <span className="layer-alt">{alt}</span>
+                                                <span className="layer-speed">{speed} m/s</span>
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
-                            </div>
 
-                            {/* 최종 판정 */}
-                            <div
-                                className="final-judgment"
-                                style={{
-                                    backgroundColor: getStatusColor(evaluation.final_judgment) + '30',
-                                    borderColor: getStatusColor(evaluation.final_judgment)
-                                }}
-                            >
-                                <h2>최종 판정</h2>
+                                {/* 최종 판정 */}
                                 <div
-                                    className="judgment-result"
-                                    style={{ color: getStatusColor(evaluation.final_judgment) }}
+                                    className="final-judgment"
+                                    style={{
+                                        backgroundColor: getStatusColor(evaluation.final_judgment) + '30',
+                                        borderColor: getStatusColor(evaluation.final_judgment)
+                                    }}
                                 >
-                                    {getStatusEmoji(evaluation.final_judgment)} {evaluation.final_judgment}
+                                    <h2>최종 판정</h2>
+                                    <div
+                                        className="judgment-result"
+                                        style={{ color: getStatusColor(evaluation.final_judgment) }}
+                                    >
+                                        {getStatusEmoji(evaluation.final_judgment)} {evaluation.final_judgment}
+                                    </div>
                                 </div>
-                            </div>
-                        </>
-                    )}
+                            </>
+                        )}
 
-                    {error && (
-                        <div className="error-panel">
-                            ❌ 오류: {error}
-                        </div>
-                    )}
-                </section>
-            </main>
+                        {error && (
+                            <div className="error-panel">
+                                ❌ 오류: {error}
+                            </div>
+                        )}
+                    </section>
+                </main>
+            )}
+
+            {/* 회랑 시뮬레이션 탭 */}
+            {activeTab === 'corridor' && (
+                <CorridorSimulation />
+            )}
 
             <footer className="footer">
                 <p>📍 데이터: NOAA SWPC (Kp) | Open-Meteo (기상) | VWorld (지도)</p>

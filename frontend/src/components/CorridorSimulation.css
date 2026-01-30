@@ -1,0 +1,295 @@
+/* 회랑 시뮬레이션 스타일 */
+.corridor-simulation {
+    padding: 20px;
+}
+
+.corridor-content {
+    display: flex;
+    gap: 20px;
+}
+
+.corridor-map-section {
+    flex: 1;
+    background: rgba(30, 41, 59, 0.6);
+    border-radius: 12px;
+    padding: 20px;
+    border: 1px solid #334155;
+}
+
+.corridor-panel-section {
+    width: 400px;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.map-header h3 {
+    margin: 0 0 5px 0;
+    color: #f1f5f9;
+}
+
+.map-header p {
+    margin: 0;
+    color: #94a3b8;
+    font-size: 0.9em;
+}
+
+/* 지점 선택 버튼 */
+.point-selection {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 15px 0;
+}
+
+.point-btn {
+    flex: 1;
+    padding: 12px 15px;
+    background: #1e293b;
+    border: 2px solid #475569;
+    border-radius: 8px;
+    color: #94a3b8;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-size: 0.9em;
+}
+
+.point-btn:hover {
+    background: #334155;
+}
+
+.point-btn.active {
+    border-color: #3b82f6;
+    background: rgba(59, 130, 246, 0.2);
+    color: #60a5fa;
+}
+
+.point-btn.selected {
+    border-color: #22c55e;
+    color: #4ade80;
+}
+
+.arrow {
+    font-size: 1.5em;
+    color: #64748b;
+}
+
+.selection-hint {
+    background: rgba(59, 130, 246, 0.2);
+    border: 1px solid #3b82f6;
+    border-radius: 8px;
+    padding: 10px 15px;
+    margin-bottom: 15px;
+    color: #60a5fa;
+    text-align: center;
+    animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.7;
+    }
+}
+
+/* 설정 패널 */
+.settings-panel {
+    background: rgba(30, 41, 59, 0.6);
+    border-radius: 12px;
+    padding: 20px;
+    border: 1px solid #334155;
+}
+
+.settings-panel h3 {
+    margin: 0 0 15px 0;
+    color: #f1f5f9;
+}
+
+.setting-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.setting-row label {
+    width: 100px;
+    color: #94a3b8;
+}
+
+.setting-row input,
+.setting-row select {
+    flex: 1;
+    padding: 8px 12px;
+    background: #1e293b;
+    border: 1px solid #475569;
+    border-radius: 6px;
+    color: white;
+}
+
+.analyze-btn {
+    width: 100%;
+    padding: 15px;
+    background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+    border: none;
+    border-radius: 8px;
+    color: white;
+    font-size: 1.1em;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.analyze-btn:hover:not(:disabled) {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);
+}
+
+.analyze-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* 에러 메시지 */
+.error-message {
+    background: rgba(239, 68, 68, 0.2);
+    border: 1px solid #ef4444;
+    border-radius: 8px;
+    padding: 12px;
+    color: #f87171;
+}
+
+/* 종합 결과 */
+.overall-result {
+    border-radius: 12px;
+    padding: 20px;
+    border: 2px solid;
+}
+
+.overall-result h3 {
+    margin: 0 0 10px 0;
+    color: #f1f5f9;
+    font-size: 1em;
+}
+
+.result-value {
+    font-size: 2em;
+    font-weight: bold;
+    margin-bottom: 15px;
+}
+
+.result-details {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 15px;
+    color: #94a3b8;
+    font-size: 0.9em;
+}
+
+.alternative-notice {
+    margin-top: 15px;
+    padding: 10px;
+    background: rgba(234, 179, 8, 0.2);
+    border-radius: 6px;
+    color: #fbbf24;
+}
+
+/* 구간별 분석 */
+.segments-panel {
+    background: rgba(30, 41, 59, 0.6);
+    border-radius: 12px;
+    padding: 20px;
+    border: 1px solid #334155;
+}
+
+.segments-panel h3 {
+    margin: 0 0 15px 0;
+    color: #f1f5f9;
+}
+
+.segments-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.segment-item {
+    background: #1e293b;
+    border-radius: 8px;
+    padding: 12px;
+    border-left: 4px solid;
+}
+
+.segment-header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    font-weight: bold;
+}
+
+.segment-info {
+    display: flex;
+    gap: 15px;
+    margin-bottom: 5px;
+}
+
+.segment-info small {
+    color: #64748b;
+}
+
+.segment-reason {
+    color: #94a3b8;
+    font-size: 0.85em;
+}
+
+/* 회랑 시각화 바 */
+.corridor-bar {
+    background: rgba(30, 41, 59, 0.6);
+    border-radius: 12px;
+    padding: 20px;
+    border: 1px solid #334155;
+}
+
+.corridor-bar h3 {
+    margin: 0 0 15px 0;
+    color: #f1f5f9;
+}
+
+.bar-container {
+    display: flex;
+    height: 30px;
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.bar-segment {
+    transition: opacity 0.2s;
+}
+
+.bar-segment:hover {
+    opacity: 0.8;
+}
+
+.bar-labels {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 8px;
+    color: #64748b;
+    font-size: 0.85em;
+}
+
+/* 반응형 */
+@media (max-width: 900px) {
+    .corridor-content {
+        flex-direction: column;
+    }
+
+    .corridor-panel-section {
+        width: 100%;
+    }
+}
