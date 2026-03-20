@@ -151,7 +151,12 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
         }
 
     timeout = httpx.Timeout(20.0, connect=10.0)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        follow_redirects=True,
+        trust_env=False,
+        http2=False,
+    ) as client:
         try:
             type_name = preferred_type_name
 
