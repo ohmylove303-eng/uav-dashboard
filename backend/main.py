@@ -324,6 +324,16 @@ try:
 except ImportError:
     pass
 
+# Building Footprint API
+try:
+    from building_footprint import lookup_building_footprint
+
+    @app.get("/api/building-footprint")
+    async def get_building_footprint(lat: float, lon: float):
+        return await lookup_building_footprint(lat, lon)
+except ImportError:
+    pass
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

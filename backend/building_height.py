@@ -29,22 +29,23 @@ class ZoningSpec:
     max_far: float       # 최대 용적률 (%)
     max_bcr: float       # 최대 건폐율 (%)
     max_floors: int      # 최대 층수 (일반적)
+    typical_floors: int  # 건물 footprint 정보가 없을 때 쓰는 대표 층수
     avg_floor_height: float = 3.3  # 평균 층고 (m)
 
 
 # 서울시 용도지역별 기준 (출처: 서울시 도시계획조례)
 ZONING_SPECS: Dict[ZoningType, ZoningSpec] = {
-    ZoningType.RESIDENTIAL_1: ZoningSpec(max_far=100, max_bcr=50, max_floors=4),
-    ZoningType.RESIDENTIAL_2: ZoningSpec(max_far=120, max_bcr=50, max_floors=4),
-    ZoningType.RESIDENTIAL_GENERAL_1: ZoningSpec(max_far=150, max_bcr=60, max_floors=4),
-    ZoningType.RESIDENTIAL_GENERAL_2: ZoningSpec(max_far=200, max_bcr=60, max_floors=15),
-    ZoningType.RESIDENTIAL_GENERAL_3: ZoningSpec(max_far=300, max_bcr=50, max_floors=25),
-    ZoningType.SEMI_RESIDENTIAL: ZoningSpec(max_far=400, max_bcr=60, max_floors=20),
-    ZoningType.COMMERCIAL_CENTRAL: ZoningSpec(max_far=1000, max_bcr=80, max_floors=50),
-    ZoningType.COMMERCIAL_GENERAL: ZoningSpec(max_far=800, max_bcr=80, max_floors=30),
-    ZoningType.COMMERCIAL_NEIGHBOR: ZoningSpec(max_far=600, max_bcr=70, max_floors=20),
-    ZoningType.INDUSTRIAL: ZoningSpec(max_far=300, max_bcr=60, max_floors=15),
-    ZoningType.GREEN: ZoningSpec(max_far=80, max_bcr=20, max_floors=4),
+    ZoningType.RESIDENTIAL_1: ZoningSpec(max_far=100, max_bcr=50, max_floors=4, typical_floors=4),
+    ZoningType.RESIDENTIAL_2: ZoningSpec(max_far=120, max_bcr=50, max_floors=4, typical_floors=4),
+    ZoningType.RESIDENTIAL_GENERAL_1: ZoningSpec(max_far=150, max_bcr=60, max_floors=4, typical_floors=4),
+    ZoningType.RESIDENTIAL_GENERAL_2: ZoningSpec(max_far=200, max_bcr=60, max_floors=15, typical_floors=12),
+    ZoningType.RESIDENTIAL_GENERAL_3: ZoningSpec(max_far=300, max_bcr=50, max_floors=25, typical_floors=20),
+    ZoningType.SEMI_RESIDENTIAL: ZoningSpec(max_far=400, max_bcr=60, max_floors=20, typical_floors=15),
+    ZoningType.COMMERCIAL_CENTRAL: ZoningSpec(max_far=1000, max_bcr=80, max_floors=50, typical_floors=35),
+    ZoningType.COMMERCIAL_GENERAL: ZoningSpec(max_far=800, max_bcr=80, max_floors=30, typical_floors=20),
+    ZoningType.COMMERCIAL_NEIGHBOR: ZoningSpec(max_far=600, max_bcr=70, max_floors=20, typical_floors=12),
+    ZoningType.INDUSTRIAL: ZoningSpec(max_far=300, max_bcr=60, max_floors=15, typical_floors=6),
+    ZoningType.GREEN: ZoningSpec(max_far=80, max_bcr=20, max_floors=4, typical_floors=2),
 }
 
 
@@ -81,25 +82,28 @@ class BuildingHeightPredictor:
         zoning_type = self._match_zoning(zoning)
         spec = ZONING_SPECS.get(zoning_type, ZONING_SPECS[ZoningType.RESIDENTIAL_GENERAL_2])
         
-        # 건폐율 기반 건축면적 추정
+        # 좌표 기반처럼 건물 footprint 정보가 없으면 FAR/BCR 나눗셈 대신 대표 층수를 사용한다.
+        # 단지형 아파트는 대지 전체 BCR과 동별 층수가 직접 비례하지 않아 3층처럼 과소추정되기 쉽다.
         if building_area is None:
-            building_area = lot_area * (spec.max_bcr / 100) * 0.9  # 90% 활용 가정
-        
-        bcr = (building_area / lot_area) * 100 if lot_area > 0 else spec.max_bcr
-        
-        # 용적률 기반 층수 계산
-        # 층수 = 용적률 / 건폐율
-        estimated_floors = min(
-            int(spec.max_far / bcr),
-            spec.max_floors
-        )
-        
+            bcr = round(spec.max_bcr * 0.9, 1)
+            estimated_floors = spec.typical_floors
+            method = "zoning_typical"
+        else:
+            bcr = (building_area / lot_area) * 100 if lot_area > 0 else spec.max_bcr
+            estimated_floors = min(
+                max(1, int(spec.max_far / bcr)),
+                spec.max_floors
+            )
+            method = "zoning_far_bcr"
+
         # 높이 계산
         estimated_height = estimated_floors * self.floor_height
         max_height = spec.max_floors * self.floor_height
         
         # 신뢰도 (용도지역 정확도 기반)
         confidence = 0.8 if zoning == zoning_type.value else 0.6
+        if building_area is None:
+            confidence -= 0.05
         
         return BuildingHeightResult(
             estimated_height=round(estimated_height, 1),
@@ -109,7 +113,7 @@ class BuildingHeightPredictor:
             far_used=spec.max_far,
             bcr_used=round(bcr, 1),
             confidence=confidence,
-            method="zoning_based"
+            method=method
         )
     
     def predict_by_far_bcr(self, far: float, bcr: float, 

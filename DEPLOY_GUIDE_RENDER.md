@@ -47,7 +47,19 @@ git push -u origin main
 | **Plan** | `Free` | 무료 플랜 선택 |
 
 ### 환경 변수 (Environment Variables)
-*만약 API 키가 필요하다면 `Advanced` -> `Environment Variables`에 추가하세요.* (현재 프로젝트는 무료 오픈 API만 사용하여 필수는 아닙니다.)
+`Advanced` -> `Environment Variables`에 아래 값을 추가합니다.
+
+| 변수명 | 설명 |
+| :--- | :--- |
+| `VWORLD_API_KEY` | VWorld 개발자센터에서 발급한 WFS 인증키 |
+| `VWORLD_REFERER` | 개발키 Referer. 운영 기준 `https://uav-vercel.vercel.app/` |
+| `VWORLD_WFS_TYPENAME` | 선택값. 비워두면 기본값 `lt_c_spbd`를 사용 |
+
+기상청 상층자료를 계속 쓸 경우 아래도 추가합니다.
+
+| 변수명 | 설명 |
+| :--- | :--- |
+| `KMA_API_KEY` | 기상청 API 허브 고층관측 인증키 |
 
 ---
 
