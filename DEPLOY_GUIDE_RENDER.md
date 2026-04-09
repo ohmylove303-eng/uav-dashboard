@@ -59,7 +59,7 @@ git push -u origin main
 
 | 변수명 | 설명 |
 | :--- | :--- |
-| `KMA_API_KEY` | 기상청 API 허브 고층관측 인증키 |
+| `KMA_API_KEY` | 기상청 API 허브 고층관측 인증키. 유효한 API 허브 authKey여야 하며, 위성/다른 포털 키로는 동작하지 않습니다. |
 
 ---
 
