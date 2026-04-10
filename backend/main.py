@@ -375,7 +375,37 @@ def evaluate_gate4(gust: float, drone_spec: Dict) -> GateResult:
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "version": "2.1.1"}
+    return {
+        "status": "ok",
+        "version": app.version,
+        "kma_configured": bool(KMA_API_KEY)
+    }
+
+@app.get("/api/kma/status")
+async def get_kma_status(lat: float = 37.558056, lon: float = 126.708333):
+    if not KMA_API_KEY:
+        return {
+            "configured": False,
+            "available": False,
+            "reason": "missing_kma_api_key"
+        }
+
+    profile = await fetch_kma_upper_air_profile(lat, lon)
+    if not profile:
+        return {
+            "configured": True,
+            "available": False,
+            "reason": "no_recent_profile_or_key_not_authorized"
+        }
+
+    return {
+        "configured": True,
+        "available": True,
+        "station_id": profile["station_id"],
+        "station_name": profile["station_name"],
+        "observed_at_utc": profile["observed_at_utc"],
+        "layer_count": len(profile["layers"])
+    }
 
 @app.get("/api/kp")
 async def get_kp_index_api():
