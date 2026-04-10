@@ -223,9 +223,13 @@ def parse_kma_upper_air_text(text: str) -> List[Dict]:
                 numeric_values.append(float(token))
             except ValueError:
                 continue
-        if len(numeric_values) < 6:
+        if len(numeric_values) < 8:
             continue
-        pa, gh, ta, td, wd, ws = numeric_values[:6]
+        # KMA upp_temp rows are:
+        # YYMMDDHHMI STN PA GH TA TD WD WS FLAG
+        pa, gh, ta, td, wd, ws = numeric_values[2:8]
+        if pa <= 0 or gh < 0 or ta < -100 or wd < -100 or ws < -100:
+            continue
         rows.append({
             "pressure_hpa": pa,
             "height_m": gh,
@@ -275,31 +279,35 @@ async def fetch_kma_upper_air_profile(lat: float, lon: float) -> Optional[Dict]:
     if not KMA_API_KEY:
         return None
 
-    station = nearest_kma_station(lat, lon)
+    stations = sorted(
+        KMA_DEFAULT_STATIONS,
+        key=lambda station: math.sqrt((station["lat"] - lat) ** 2 + (station["lon"] - lon) ** 2)
+    )
     async with httpx.AsyncClient(timeout=8) as client:
-        for cycle in latest_kma_cycles():
-            url = "https://apihub.kma.go.kr/api/typ01/url/upp_temp.php"
-            params = {
-                "tm": cycle,
-                "stn": station["id"],
-                "pa": 0,
-                "help": 0,
-                "authKey": KMA_API_KEY
-            }
-            try:
-                response = await client.get(url, params=params)
-                if response.status_code != 200:
+        for station in stations:
+            for cycle in latest_kma_cycles():
+                url = "https://apihub.kma.go.kr/api/typ01/url/upp_temp.php"
+                params = {
+                    "tm": cycle,
+                    "stn": station["id"],
+                    "pa": 0,
+                    "help": 0,
+                    "authKey": KMA_API_KEY
+                }
+                try:
+                    response = await client.get(url, params=params)
+                    if response.status_code != 200:
+                        continue
+                    rows = parse_kma_upper_air_text(response.text)
+                    if rows:
+                        return {
+                            "station_id": station["id"],
+                            "station_name": station["name"],
+                            "observed_at_utc": cycle,
+                            "layers": rows
+                        }
+                except Exception:
                     continue
-                rows = parse_kma_upper_air_text(response.text)
-                if rows:
-                    return {
-                        "station_id": station["id"],
-                        "station_name": station["name"],
-                        "observed_at_utc": cycle,
-                        "layers": rows
-                    }
-            except Exception:
-                continue
     return None
 
 # ============================================
