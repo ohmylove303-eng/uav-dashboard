@@ -23,6 +23,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 
 VWORLD_WFS_ENDPOINT = "https://api.vworld.kr/req/wfs"
+OVERPASS_ENDPOINT = os.getenv("OVERPASS_ENDPOINT", "https://overpass-api.de/api/interpreter")
 DEFAULT_SEARCH_RADIUS_M = 40
 DEFAULT_MAX_FEATURES = 25
 DEFAULT_VWORLD_REFERER = "https://uav-vercel.vercel.app/"
@@ -97,6 +98,13 @@ def _distance_to_point(feature: Dict[str, Any], lat: float, lon: float) -> float
     return math.sqrt(((center["lat"] - lat) ** 2) + ((center["lon"] - lon) ** 2))
 
 
+def _distance_to_ring(ring: Iterable[Iterable[float]], lat: float, lon: float) -> float:
+    center = _average_ring_center(ring)
+    if not center:
+        return float("inf")
+    return math.sqrt(((center["lat"] - lat) ** 2) + ((center["lon"] - lon) ** 2))
+
+
 def _parse_type_names_from_capabilities(xml_text: str) -> List[str]:
     feature_blocks = re.findall(r"<FeatureType[\s\S]*?<\/FeatureType>", xml_text or "", flags=re.IGNORECASE)
     type_names: List[str] = []
@@ -149,6 +157,23 @@ def _fetch_text_sync(params: Dict[str, Any], timeout_s: float = 20.0) -> str:
         return response.read().decode("utf-8", "replace")
 
 
+def _post_text_sync(url: str, data: str, timeout_s: float = 20.0) -> str:
+    encoded = data.encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=encoded,
+        headers={
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "User-Agent": "UAV-Dash/3.0 overpass fallback",
+            "Connection": "close",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout_s) as response:
+        return response.read().decode("utf-8", "replace")
+
+
 def _fetch_text_with_retries_sync(
     params: Dict[str, Any],
     timeout_s: float = 20.0,
@@ -183,6 +208,62 @@ def _load_footprint_cache() -> List[Dict[str, Any]]:
     else:
         entries = payload
     return entries if isinstance(entries, list) else []
+
+
+def _write_footprint_cache(entries: List[Dict[str, Any]]) -> None:
+    os.makedirs(os.path.dirname(FOOTPRINT_CACHE_PATH), exist_ok=True)
+    with open(FOOTPRINT_CACHE_PATH, "w", encoding="utf-8") as fp:
+        json.dump(entries, fp, ensure_ascii=False, indent=2)
+
+
+def _store_footprint_cache_entry(
+    lat: float,
+    lon: float,
+    geometry: Iterable[Iterable[float]],
+    properties: Optional[Dict[str, Any]] = None,
+    source: str = "manual_seed",
+    dedupe_distance_deg: float = 0.00025,
+) -> Dict[str, Any]:
+    ring = [list(point) for point in (geometry or []) if isinstance(point, (list, tuple)) and len(point) >= 2]
+    if len(ring) < 4:
+        raise ValueError("invalid_geometry")
+
+    center = _average_ring_center(ring) or {"lat": lat, "lon": lon}
+    entries = _load_footprint_cache()
+    updated = False
+
+    for entry in entries:
+        entry_center = entry.get("center") or {}
+        try:
+            entry_lat = float(entry_center.get("lat"))
+            entry_lon = float(entry_center.get("lon"))
+        except Exception:
+            continue
+
+        distance = math.sqrt(((entry_lat - center["lat"]) ** 2) + ((entry_lon - center["lon"]) ** 2))
+        if distance <= dedupe_distance_deg:
+            entry["geometry"] = ring
+            entry["properties"] = _sanitize_properties(properties or {})
+            entry["center"] = center
+            entry["source"] = source
+            updated = True
+            break
+
+    if not updated:
+        entries.append({
+            "center": center,
+            "geometry": ring,
+            "properties": _sanitize_properties(properties or {}),
+            "source": source,
+        })
+
+    _write_footprint_cache(entries)
+    return {
+        "available": True,
+        "source": "footprint_cache",
+        "geometry": ring,
+        "properties": _sanitize_properties(properties or {}),
+    }
 
 
 def _match_cached_footprint(lat: float, lon: float, max_distance_deg: float = 0.0012) -> Optional[Dict[str, Any]]:
@@ -221,14 +302,96 @@ def _match_cached_footprint(lat: float, lon: float, max_distance_deg: float = 0.
     return None
 
 
+def _osm_query(lat: float, lon: float, radius_m: float = 60.0) -> str:
+    return f"""
+[out:json][timeout:20];
+(
+  way(around:{radius_m:.0f},{lat},{lon})["building"];
+  relation(around:{radius_m:.0f},{lat},{lon})["building"];
+);
+out geom tags qt;
+""".strip()
+
+
+def _normalize_osm_ring(element: Dict[str, Any]) -> Optional[List[List[float]]]:
+    geometry = element.get("geometry") or []
+    if not isinstance(geometry, list) or len(geometry) < 3:
+        return None
+
+    ring: List[List[float]] = []
+    for point in geometry:
+        if not isinstance(point, dict):
+            continue
+        lat = point.get("lat")
+        lon = point.get("lon")
+        if lat is None or lon is None:
+            continue
+        ring.append([float(lon), float(lat)])
+
+    if len(ring) < 3:
+        return None
+
+    if ring[0] != ring[-1]:
+        ring.append(ring[0])
+    return ring if len(ring) >= 4 else None
+
+
+def _lookup_osm_fallback_sync(lat: float, lon: float) -> Optional[Dict[str, Any]]:
+    try:
+        query = urllib.parse.urlencode({"data": _osm_query(lat, lon)})
+        payload_text = _post_text_sync(OVERPASS_ENDPOINT, query, timeout_s=20.0)
+        payload = json.loads(payload_text)
+    except Exception:
+        return None
+
+    elements = payload.get("elements") if isinstance(payload, dict) else []
+    if not isinstance(elements, list):
+        return None
+
+    candidates: List[Dict[str, Any]] = []
+    for element in elements:
+        if not isinstance(element, dict):
+            continue
+        ring = _normalize_osm_ring(element)
+        if not ring:
+            continue
+        candidates.append({
+            "geometry": ring,
+            "properties": _sanitize_properties(element.get("tags") or {}),
+        })
+
+    if not candidates:
+        return None
+
+    nearest = min(candidates, key=lambda item: _distance_to_ring(item["geometry"], lat, lon))
+    return {
+        "available": True,
+        "source": "osm_fallback",
+        "geometry": nearest["geometry"],
+        "properties": nearest["properties"],
+    }
+
+
 async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
     api_key = os.getenv("VWORLD_API_KEY")
     preferred_type_name = os.getenv("VWORLD_WFS_TYPENAME")
 
     cached_match = _match_cached_footprint(lat, lon)
+    osm_fallback = await asyncio.to_thread(_lookup_osm_fallback_sync, lat, lon)
+    if osm_fallback and osm_fallback.get("available"):
+        try:
+            _store_footprint_cache_entry(
+                lat,
+                lon,
+                osm_fallback.get("geometry") or [],
+                properties=osm_fallback.get("properties"),
+                source="osm_fallback",
+            )
+        except Exception:
+            pass
 
     if not api_key:
-        return cached_match or {
+        return cached_match or osm_fallback or {
             "available": False,
             "source": "vworld_wfs",
             "reason": "missing_vworld_api_key",
@@ -291,7 +454,7 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
             if isinstance(feature, dict) and (_get_polygon_ring(feature) or [])
         ]
         if not polygon_features:
-            return cached_match or {
+            return cached_match or osm_fallback or {
                 "available": False,
                 "source": "vworld_wfs",
                 "typeName": type_name,
@@ -301,35 +464,50 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
         nearest = min(polygon_features, key=lambda feature: _distance_to_point(feature, lat, lon))
         geometry = _get_polygon_ring(nearest)
         if not geometry or len(geometry) < 4:
-            return cached_match or {
+            return cached_match or osm_fallback or {
                 "available": False,
                 "source": "vworld_wfs",
                 "typeName": type_name,
                 "reason": "no_polygon_feature_found",
             }
 
-        return {
+        result = {
             "available": True,
             "source": "vworld_wfs",
             "typeName": type_name,
             "geometry": geometry,
             "properties": _sanitize_properties(nearest.get("properties")),
         }
+        try:
+            _store_footprint_cache_entry(
+                lat,
+                lon,
+                result["geometry"],
+                properties=result.get("properties"),
+                source="vworld_wfs",
+            )
+        except Exception:
+            pass
+        return result
     except urllib.error.HTTPError as error:
         try:
             detail = error.read().decode("utf-8", "replace")[:400]
         except Exception:
             detail = str(error)
-        return cached_match or {
+        return cached_match or osm_fallback or {
             "available": False,
             "source": "vworld_wfs",
             "reason": "feature_request_failed",
             "detail": detail,
         }
     except Exception as error:
-        return cached_match or {
+        return cached_match or osm_fallback or {
             "available": False,
             "source": "vworld_wfs",
             "reason": "unexpected_error",
             "detail": str(error),
         }
+
+
+def cache_building_footprint(lat: float, lon: float, geometry: Iterable[Iterable[float]], properties: Optional[Dict[str, Any]] = None, source: str = "manual_seed") -> Dict[str, Any]:
+    return _store_footprint_cache_entry(lat, lon, geometry, properties=properties, source=source)

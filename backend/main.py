@@ -117,6 +117,14 @@ class EvaluationRequest(BaseModel):
     temperature: Optional[float] = None
     humidity: Optional[float] = None
 
+
+class FootprintCacheRequest(BaseModel):
+    lat: float
+    lon: float
+    geometry: List[List[float]]
+    properties: Optional[Dict] = None
+    source: str = "frontend_seed"
+
 class EvaluationResponse(BaseModel):
     timestamp: str
     location: Dict[str, float]
@@ -526,11 +534,21 @@ except ImportError:
 
 # Building Footprint API
 try:
-    from building_footprint import lookup_building_footprint
+    from building_footprint import lookup_building_footprint, cache_building_footprint
 
     @app.get("/api/building-footprint")
     async def get_building_footprint(lat: float, lon: float):
         return await lookup_building_footprint(lat, lon)
+
+    @app.post("/api/building-footprint/cache")
+    async def seed_building_footprint(payload: FootprintCacheRequest):
+        return cache_building_footprint(
+            payload.lat,
+            payload.lon,
+            payload.geometry,
+            properties=payload.properties,
+            source=payload.source,
+        )
 except ImportError:
     pass
 
