@@ -15,6 +15,7 @@ import httpx
 import asyncio
 import os
 import math
+import time
 
 app = FastAPI(
     title="UAV Urban Ops API",
@@ -82,6 +83,12 @@ WIS2_STATION_ENDPOINT = "https://wis2box.kma.go.kr/oapi/collections/stations/ite
 WIND_PROFILER_MODE = os.getenv("KMA_WIND_PROFILER_MODE", "L")
 WIND_PROFILER_MAX_ALT_M = float(os.getenv("KMA_WIND_PROFILER_MAX_ALT_M", "5000"))
 WIS2_STATION_CACHE: Dict[int, Dict[str, Any]] = {}
+WEATHER_CACHE_TTL_S = float(os.getenv("WEATHER_CACHE_TTL_S", "180"))
+UPPER_AIR_CACHE_TTL_S = float(os.getenv("UPPER_AIR_CACHE_TTL_S", "900"))
+WIND_PROFILER_CACHE_TTL_S = float(os.getenv("WIND_PROFILER_CACHE_TTL_S", "300"))
+WEATHER_CACHE: Dict[str, Dict[str, Any]] = {}
+UPPER_AIR_CACHE: Dict[str, Dict[str, Any]] = {}
+WIND_PROFILER_CACHE: Dict[str, Dict[str, Any]] = {}
 
 class GateResult(BaseModel):
     gate: str
@@ -144,6 +151,25 @@ class EvaluationResponse(BaseModel):
     wind_profiler_profile: Optional[Dict] = None
     selected_layer: Optional[Dict] = None
 
+
+def _round_coord(value: float, precision: int = 3) -> float:
+    return round(value, precision)
+
+
+def _cache_get(store: Dict[str, Dict[str, Any]], key: str, ttl_s: float):
+    entry = store.get(key)
+    if not entry:
+        return None
+    if (time.time() - entry["ts"]) > ttl_s:
+        store.pop(key, None)
+        return None
+    return entry["value"]
+
+
+def _cache_set(store: Dict[str, Dict[str, Any]], key: str, value: Any):
+    store[key] = {"ts": time.time(), "value": value}
+    return value
+
 # ============================================
 # 기상 API 연동
 # ============================================
@@ -160,6 +186,11 @@ async def fetch_kp_index() -> float:
     return 3.0
 
 async def fetch_weather(lat: float, lon: float) -> Dict:
+    cache_key = f"{_round_coord(lat)},{_round_coord(lon)}"
+    cached = _cache_get(WEATHER_CACHE, cache_key, WEATHER_CACHE_TTL_S)
+    if cached:
+        return dict(cached)
+
     url = "https://api.open-meteo.com/v1/forecast"
     # UAV Forecast급 상세 데이터 요청
     params = {
@@ -180,7 +211,7 @@ async def fetch_weather(lat: float, lon: float) -> Dict:
                 sunrise = daily.get("sunrise", ["00:00"])[0].split("T")[-1][:5]
                 sunset = daily.get("sunset", ["00:00"])[0].split("T")[-1][:5]
 
-                return {
+                result = {
                     "wind_speed": curr.get("wind_speed_10m", 5) / 3.6, # m/s 변환
                     "gust_speed": curr.get("wind_gusts_10m", 8) / 3.6,
                     "wind_direction": curr.get("wind_direction_10m", 0),
@@ -195,17 +226,19 @@ async def fetch_weather(lat: float, lon: float) -> Dict:
                     "sunset": sunset,
                     "source": "open_meteo_surface"
                 }
+                return _cache_set(WEATHER_CACHE, cache_key, result)
     except Exception as e:
         print(f"Weather Fetch Error: {e}")
         pass
         
-    return {
+    fallback = {
         "wind_speed": 5.0, "gust_speed": 8.0, "wind_direction": 0,
         "visibility": 10.0, "precipitation_prob": 10, "temperature": 20, 
         "dew_point": 15, "humidity": 50, "cloud_cover": 20,
         "weather_code": 0, "sunrise": "06:00", "sunset": "18:00",
         "source": "surface_fallback"
     }
+    return _cache_set(WEATHER_CACHE, cache_key, fallback)
 
 def nearest_kma_station(lat: float, lon: float) -> Dict:
     def station_dist(station: Dict) -> float:
@@ -368,6 +401,11 @@ async def fetch_kma_upper_air_profile(lat: float, lon: float) -> Optional[Dict]:
     if not KMA_API_KEY:
         return None
 
+    cache_key = f"{_round_coord(lat)},{_round_coord(lon)}"
+    cached = _cache_get(UPPER_AIR_CACHE, cache_key, UPPER_AIR_CACHE_TTL_S)
+    if cached is not None:
+        return cached
+
     stations = sorted(
         KMA_DEFAULT_STATIONS,
         key=lambda station: math.sqrt((station["lat"] - lat) ** 2 + (station["lon"] - lon) ** 2)
@@ -389,20 +427,26 @@ async def fetch_kma_upper_air_profile(lat: float, lon: float) -> Optional[Dict]:
                         continue
                     rows = parse_kma_upper_air_text(response.text)
                     if rows:
-                        return {
+                        result = {
                             "station_id": station["id"],
                             "station_name": station["name"],
                             "observed_at_utc": cycle,
                             "layers": rows
                         }
+                        return _cache_set(UPPER_AIR_CACHE, cache_key, result)
                 except Exception:
                     continue
-    return None
+    return _cache_set(UPPER_AIR_CACHE, cache_key, None)
 
 
 async def fetch_kma_wind_profiler_profile(lat: float, lon: float, mode: str = WIND_PROFILER_MODE) -> Optional[Dict]:
     if not KMA_API_KEY:
         return None
+
+    cache_key = f"{mode}:{_round_coord(lat)},{_round_coord(lon)}"
+    cached = _cache_get(WIND_PROFILER_CACHE, cache_key, WIND_PROFILER_CACHE_TTL_S)
+    if cached is not None:
+        return cached
 
     async with httpx.AsyncClient(timeout=10) as client:
         for cycle in latest_wind_profiler_cycles():
@@ -441,14 +485,15 @@ async def fetch_kma_wind_profiler_profile(lat: float, lon: float, mode: str = WI
                 key=lambda item: math.sqrt((item["station"]["lat"] - lat) ** 2 + (item["station"]["lon"] - lon) ** 2)
             )
             selected = station_candidates[0]
-            return {
+            result = {
                 "station_id": selected["station"]["id"],
                 "station_name": selected["station"]["name"],
                 "observed_at_utc": cycle,
                 "mode": mode,
                 "layers": selected["layers"]
             }
-    return None
+            return _cache_set(WIND_PROFILER_CACHE, cache_key, result)
+    return _cache_set(WIND_PROFILER_CACHE, cache_key, None)
 
 # ============================================
 # 게이트 계산 로직
