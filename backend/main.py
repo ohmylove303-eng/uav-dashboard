@@ -836,7 +836,11 @@ async def evaluate_flight(request: EvaluationRequest):
     if source_suffixes:
         weather["source"] = f'{weather.get("source", "open_meteo_surface")} + {", ".join(source_suffixes)}'
 
-    profile_layers = build_profile_layers(weather, upper_air, wind_profiler)
+    try:
+        profile_layers = build_profile_layers(weather, upper_air, wind_profiler)
+    except Exception as exc:
+        print(f"Profile Layers Build Error: {exc}")
+        profile_layers = []
     
     # 2. Drone Specs
     spec = DRONE_SPECS[request.drone_model]
