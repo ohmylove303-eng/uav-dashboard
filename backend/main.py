@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 import httpx
@@ -78,6 +78,10 @@ KMA_DEFAULT_STATIONS = [
     {"id": 47138, "name": "포항", "lat": 36.032, "lon": 129.380},
     {"id": 47169, "name": "흑산도", "lat": 34.688, "lon": 125.451},
 ]
+WIS2_STATION_ENDPOINT = "https://wis2box.kma.go.kr/oapi/collections/stations/items/0-20000-0-{stn}?f=json"
+WIND_PROFILER_MODE = os.getenv("KMA_WIND_PROFILER_MODE", "L")
+WIND_PROFILER_MAX_ALT_M = float(os.getenv("KMA_WIND_PROFILER_MAX_ALT_M", "5000"))
+WIS2_STATION_CACHE: Dict[int, Dict[str, Any]] = {}
 
 class GateResult(BaseModel):
     gate: str
@@ -137,6 +141,7 @@ class EvaluationResponse(BaseModel):
     source: Optional[str] = None
     profile_source: Optional[str] = None
     upper_air_profile: Optional[Dict] = None
+    wind_profiler_profile: Optional[Dict] = None
     selected_layer: Optional[Dict] = None
 
 # ============================================
@@ -218,6 +223,17 @@ def latest_kma_cycles(now_utc: Optional[datetime] = None, limit: int = 4) -> Lis
         cursor -= timedelta(hours=12)
     return cycles
 
+
+def latest_wind_profiler_cycles(now_utc: Optional[datetime] = None, limit: int = 18) -> List[str]:
+    now_utc = now_utc or datetime.now(timezone.utc)
+    minute_bucket = (now_utc.minute // 10) * 10
+    cursor = now_utc.replace(minute=minute_bucket, second=0, microsecond=0)
+    cycles = []
+    while len(cycles) < limit:
+        cycles.append(cursor.strftime("%Y%m%d%H%M"))
+        cursor -= timedelta(minutes=10)
+    return cycles
+
 def parse_kma_upper_air_text(text: str) -> List[Dict]:
     rows: List[Dict] = []
     for raw_line in text.splitlines():
@@ -248,6 +264,41 @@ def parse_kma_upper_air_text(text: str) -> List[Dict]:
         })
     rows.sort(key=lambda item: item["height_m"])
     return rows
+
+
+def parse_kma_wind_profiler_text(text: str) -> Dict[int, List[Dict]]:
+    grouped_rows: Dict[int, List[Dict]] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        tokens = line.split()
+        numeric_values = []
+        for token in tokens:
+            try:
+                numeric_values.append(float(token))
+            except ValueError:
+                continue
+        # TM STN HT WD WS U V W QC
+        if len(numeric_values) < 9:
+            continue
+        stn = int(numeric_values[1])
+        ht, wd, ws, u, v, w, qc = numeric_values[2:9]
+        if ht < 0 or ht > WIND_PROFILER_MAX_ALT_M or wd < -100 or ws < -100:
+            continue
+        grouped_rows.setdefault(stn, []).append({
+            "height_m": ht,
+            "wind_direction_deg": wd,
+            "wind_speed_mps": ws,
+            "u_component": u,
+            "v_component": v,
+            "w_component": w,
+            "qc": qc,
+        })
+
+    for stn_rows in grouped_rows.values():
+        stn_rows.sort(key=lambda item: item["height_m"])
+    return grouped_rows
 
 def interpolate_profile_layer(profile: List[Dict], mission_altitude: float) -> Optional[Dict]:
     if not profile:
@@ -283,6 +334,36 @@ def calculate_air_density(pressure_hpa: float, temperature_c: float) -> float:
         return 1.225
     return round(pressure_pa / (287.05 * temperature_k), 3)
 
+
+async def fetch_wis2_station_metadata(stn: int) -> Optional[Dict[str, Any]]:
+    if stn in WIS2_STATION_CACHE:
+        return WIS2_STATION_CACHE[stn]
+
+    url = WIS2_STATION_ENDPOINT.format(stn=stn)
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            response = await client.get(url)
+            if response.status_code != 200:
+                return None
+            payload = response.json()
+    except Exception:
+        return None
+
+    properties = payload.get("properties") or {}
+    geometry = payload.get("geometry") or {}
+    coords = geometry.get("coordinates") or []
+    if len(coords) < 2:
+        return None
+
+    station = {
+        "id": stn,
+        "name": properties.get("name") or f"STN-{stn}",
+        "lat": float(coords[1]),
+        "lon": float(coords[0]),
+    }
+    WIS2_STATION_CACHE[stn] = station
+    return station
+
 async def fetch_kma_upper_air_profile(lat: float, lon: float) -> Optional[Dict]:
     if not KMA_API_KEY:
         return None
@@ -316,6 +397,57 @@ async def fetch_kma_upper_air_profile(lat: float, lon: float) -> Optional[Dict]:
                         }
                 except Exception:
                     continue
+    return None
+
+
+async def fetch_kma_wind_profiler_profile(lat: float, lon: float, mode: str = WIND_PROFILER_MODE) -> Optional[Dict]:
+    if not KMA_API_KEY:
+        return None
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        for cycle in latest_wind_profiler_cycles():
+            url = "https://apihub.kma.go.kr/api/typ01/url/kma_wpf.php"
+            params = {
+                "tm": cycle,
+                "stn": 0,
+                "mode": mode,
+                "help": 0,
+                "authKey": KMA_API_KEY
+            }
+            try:
+                response = await client.get(url, params=params)
+                if response.status_code != 200:
+                    continue
+                grouped_rows = parse_kma_wind_profiler_text(response.text)
+                if not grouped_rows:
+                    continue
+            except Exception:
+                continue
+
+            station_candidates: List[Dict[str, Any]] = []
+            for stn, layers in grouped_rows.items():
+                metadata = await fetch_wis2_station_metadata(stn)
+                if not metadata:
+                    continue
+                station_candidates.append({
+                    "station": metadata,
+                    "layers": layers
+                })
+
+            if not station_candidates:
+                continue
+
+            station_candidates.sort(
+                key=lambda item: math.sqrt((item["station"]["lat"] - lat) ** 2 + (item["station"]["lon"] - lon) ** 2)
+            )
+            selected = station_candidates[0]
+            return {
+                "station_id": selected["station"]["id"],
+                "station_name": selected["station"]["name"],
+                "observed_at_utc": cycle,
+                "mode": mode,
+                "layers": selected["layers"]
+            }
     return None
 
 # ============================================
@@ -425,9 +557,16 @@ async def get_weather_api(lat: float = 37.5665, lon: float = 126.9780):
     w = await fetch_weather(lat, lon)
     kp = await fetch_kp_index()
     w["kp_index"] = kp
-    upper_air = await fetch_kma_upper_air_profile(lat, lon)
-    if upper_air:
+    upper_air, wind_profiler = await asyncio.gather(
+        fetch_kma_upper_air_profile(lat, lon),
+        fetch_kma_wind_profiler_profile(lat, lon)
+    )
+    if upper_air and wind_profiler:
+        w["source"] = "kma_radiosonde + kma_wind_profiler + open_meteo_surface"
+    elif upper_air:
         w["source"] = "kma_radiosonde + open_meteo_surface"
+    elif wind_profiler:
+        w["source"] = "kma_wind_profiler + open_meteo_surface"
     return {"weather": w}
 
 @app.post("/api/evaluate", response_model=EvaluationResponse)
@@ -451,9 +590,13 @@ async def evaluate_flight(request: EvaluationRequest):
         kp = await fetch_kp_index()
     
     weather["kp_index"] = kp
-    upper_air = await fetch_kma_upper_air_profile(request.latitude, request.longitude)
+    upper_air, wind_profiler = await asyncio.gather(
+        fetch_kma_upper_air_profile(request.latitude, request.longitude),
+        fetch_kma_wind_profiler_profile(request.latitude, request.longitude)
+    )
     selected_layer = None
     profile_source = "surface_only"
+    wind_profiler_layer = None
     if upper_air:
         selected_layer = interpolate_profile_layer(upper_air["layers"], request.mission_altitude)
         if selected_layer:
@@ -469,6 +612,38 @@ async def evaluate_flight(request: EvaluationRequest):
             )
             weather["source"] = "kma_radiosonde + open_meteo_surface"
             profile_source = "kma_radiosonde"
+
+    if wind_profiler:
+        wind_profiler_layer = interpolate_profile_layer(wind_profiler["layers"], request.mission_altitude)
+        if wind_profiler_layer:
+            weather["wind_speed_surface"] = weather.get("wind_speed_surface", weather["wind_speed"])
+            weather["gust_speed_surface"] = weather.get("gust_speed_surface", weather["gust_speed"])
+            weather["wind_direction_surface"] = weather.get("wind_direction_surface", weather.get("wind_direction", 0))
+            weather["wind_speed"] = round(wind_profiler_layer["wind_speed_mps"], 3)
+            weather["wind_direction"] = round(wind_profiler_layer["wind_direction_deg"], 1)
+            weather["gust_speed"] = round(max(weather["gust_speed"], wind_profiler_layer["wind_speed_mps"] * 1.2), 3)
+            if selected_layer:
+                selected_layer["wind_speed_mps"] = wind_profiler_layer["wind_speed_mps"]
+                selected_layer["wind_direction_deg"] = wind_profiler_layer["wind_direction_deg"]
+            else:
+                selected_layer = {
+                    "height_m": wind_profiler_layer["height_m"],
+                    "pressure_hpa": 1013.25,
+                    "temperature_c": weather.get("temperature", 20.0),
+                    "dew_point_c": weather.get("dew_point", 15.0),
+                    "wind_direction_deg": wind_profiler_layer["wind_direction_deg"],
+                    "wind_speed_mps": wind_profiler_layer["wind_speed_mps"],
+                }
+                weather["upper_air_density"] = calculate_air_density(
+                    selected_layer["pressure_hpa"],
+                    selected_layer["temperature_c"]
+                )
+            weather["source"] = (
+                "kma_radiosonde + kma_wind_profiler + open_meteo_surface"
+                if upper_air else
+                "kma_wind_profiler + open_meteo_surface"
+            )
+            profile_source = "kma_radiosonde_wind_profiler" if upper_air else "kma_wind_profiler"
     
     # 2. Drone Specs
     spec = DRONE_SPECS[request.drone_model]
@@ -511,6 +686,13 @@ async def evaluate_flight(request: EvaluationRequest):
             "observed_at_utc": upper_air["observed_at_utc"],
             "layer_count": len(upper_air["layers"])
         } if upper_air else None,
+        wind_profiler_profile={
+            "station_id": wind_profiler["station_id"],
+            "station_name": wind_profiler["station_name"],
+            "observed_at_utc": wind_profiler["observed_at_utc"],
+            "mode": wind_profiler["mode"],
+            "layer_count": len(wind_profiler["layers"])
+        } if wind_profiler else None,
         selected_layer={
             "height_m": round(selected_layer["height_m"], 1),
             "pressure_hpa": round(selected_layer["pressure_hpa"], 1),
