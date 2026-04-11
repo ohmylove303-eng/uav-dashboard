@@ -156,6 +156,7 @@ class EvaluationResponse(BaseModel):
     upper_air_profile: Optional[Dict] = None
     wind_profiler_profile: Optional[Dict] = None
     selected_layer: Optional[Dict] = None
+    profile_layers: Optional[List[Dict]] = None
 
 
 def _round_coord(value: float, precision: int = 3) -> float:
@@ -398,6 +399,79 @@ def interpolate_profile_layer(profile: List[Dict], mission_altitude: float) -> O
         "wind_direction_deg": lower["wind_direction_deg"] + (upper["wind_direction_deg"] - lower["wind_direction_deg"]) * ratio,
         "wind_speed_mps": lower["wind_speed_mps"] + (upper["wind_speed_mps"] - lower["wind_speed_mps"]) * ratio
     }
+
+
+def build_surface_anchor(weather: Dict) -> Dict:
+    surface_temp = float(weather.get("temperature", 20.0))
+    surface_dew = float(weather.get("dew_point", max(surface_temp - 3.0, -20.0)))
+    return {
+        "pressure_hpa": 1013.25,
+        "height_m": 0.0,
+        "temperature_c": surface_temp,
+        "dew_point_c": surface_dew,
+        "wind_direction_deg": float(weather.get("wind_direction_surface", weather.get("wind_direction", 0.0))),
+        "wind_speed_mps": float(weather.get("wind_speed_surface", weather.get("wind_speed", 0.0))),
+    }
+
+
+def build_synthetic_profile_layer(weather: Dict, altitude_m: float) -> Dict:
+    surface = build_surface_anchor(weather)
+    pressure_hpa = surface["pressure_hpa"] * math.exp(-altitude_m / 8434.5)
+    temperature_c = surface["temperature_c"] - 0.0065 * altitude_m
+    dew_point_c = surface["dew_point_c"] - 0.002 * altitude_m
+    wind_speed_mps = max(0.0, surface["wind_speed_mps"] * (1.0 + min(altitude_m, 200.0) * 0.003))
+    return {
+        "pressure_hpa": pressure_hpa,
+        "height_m": altitude_m,
+        "temperature_c": temperature_c,
+        "dew_point_c": dew_point_c,
+        "wind_direction_deg": surface["wind_direction_deg"],
+        "wind_speed_mps": wind_speed_mps,
+    }
+
+
+def build_profile_layers(
+    weather: Dict,
+    upper_air: Optional[Dict],
+    wind_profiler: Optional[Dict],
+    altitude_max_m: int = 200,
+    step_m: int = 5
+) -> List[Dict]:
+    layers: List[Dict] = []
+    upper_profile = None
+    if upper_air and upper_air.get("layers"):
+        upper_profile = [build_surface_anchor(weather)] + list(upper_air["layers"])
+        upper_profile.sort(key=lambda item: item["height_m"])
+
+    profiler_profile = wind_profiler["layers"] if wind_profiler and wind_profiler.get("layers") else None
+
+    for altitude in range(0, altitude_max_m + 1, step_m):
+        if upper_profile:
+            layer = interpolate_profile_layer(upper_profile, float(altitude))
+        else:
+            layer = build_synthetic_profile_layer(weather, float(altitude))
+
+        if not layer:
+            layer = build_synthetic_profile_layer(weather, float(altitude))
+
+        if profiler_profile:
+            profiler_layer = interpolate_profile_layer(profiler_profile, float(altitude))
+            if profiler_layer:
+                layer["wind_speed_mps"] = profiler_layer["wind_speed_mps"]
+                layer["wind_direction_deg"] = profiler_layer["wind_direction_deg"]
+
+        density = calculate_air_density(layer["pressure_hpa"], layer["temperature_c"])
+        layers.append({
+            "height_m": round(layer["height_m"], 1),
+            "pressure_hpa": round(layer["pressure_hpa"], 1),
+            "temperature_c": round(layer["temperature_c"], 1),
+            "dew_point_c": round(layer["dew_point_c"], 1),
+            "wind_direction_deg": round(layer["wind_direction_deg"], 1),
+            "wind_speed_mps": round(layer["wind_speed_mps"], 2),
+            "density": density
+        })
+
+    return layers
 
 def calculate_air_density(pressure_hpa: float, temperature_c: float) -> float:
     pressure_pa = pressure_hpa * 100.0
@@ -761,6 +835,8 @@ async def evaluate_flight(request: EvaluationRequest):
 
     if source_suffixes:
         weather["source"] = f'{weather.get("source", "open_meteo_surface")} + {", ".join(source_suffixes)}'
+
+    profile_layers = build_profile_layers(weather, upper_air, wind_profiler)
     
     # 2. Drone Specs
     spec = DRONE_SPECS[request.drone_model]
@@ -820,7 +896,8 @@ async def evaluate_flight(request: EvaluationRequest):
             "wind_direction_deg": round(selected_layer["wind_direction_deg"], 1),
             "wind_speed_mps": round(selected_layer["wind_speed_mps"], 2),
             "density": weather.get("upper_air_density")
-        } if selected_layer else None
+        } if selected_layer else None,
+        profile_layers=profile_layers
     )
 
 # Building Height API
