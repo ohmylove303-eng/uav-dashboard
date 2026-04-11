@@ -9,10 +9,13 @@ directly due to CORS restrictions.
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import math
 import os
 import re
+import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -25,6 +28,7 @@ DEFAULT_MAX_FEATURES = 25
 DEFAULT_VWORLD_REFERER = "https://uav-vercel.vercel.app/"
 DEFAULT_VWORLD_TYPENAME = "lt_c_spbd"
 BUILDING_KEYWORDS = ("bldg", "build", "building", "건물", "bd")
+FOOTPRINT_CACHE_PATH = os.path.join(os.path.dirname(__file__), "static", "footprint_cache.json")
 
 
 def _to_radians(degrees: float) -> float:
@@ -133,6 +137,7 @@ def _request_headers() -> Dict[str, str]:
         "Accept": "application/json, application/xml, text/xml, */*",
         "User-Agent": "UAV-Dash/3.0 render footprint proxy",
         "Referer": os.getenv("VWORLD_REFERER", DEFAULT_VWORLD_REFERER),
+        "Connection": "close",
     }
 
 
@@ -144,23 +149,97 @@ def _fetch_text_sync(params: Dict[str, Any], timeout_s: float = 20.0) -> str:
         return response.read().decode("utf-8", "replace")
 
 
+def _fetch_text_with_retries_sync(
+    params: Dict[str, Any],
+    timeout_s: float = 20.0,
+    retries: int = 3,
+) -> str:
+    last_error: Optional[Exception] = None
+    for attempt in range(retries):
+        try:
+            return _fetch_text_sync(params, timeout_s=timeout_s)
+        except (urllib.error.URLError, http.client.RemoteDisconnected, ConnectionResetError, socket.timeout) as error:
+            last_error = error
+            if attempt == retries - 1:
+                raise
+            time_to_sleep = 0.6 * (attempt + 1)
+            time.sleep(time_to_sleep)
+    if last_error:
+        raise last_error
+    raise RuntimeError("footprint_fetch_failed")
+
+
+def _load_footprint_cache() -> List[Dict[str, Any]]:
+    try:
+        with open(FOOTPRINT_CACHE_PATH, "r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+    except FileNotFoundError:
+        return []
+    except Exception:
+        return []
+
+    if isinstance(payload, dict):
+        entries = payload.get("entries") or payload.get("features") or []
+    else:
+        entries = payload
+    return entries if isinstance(entries, list) else []
+
+
+def _match_cached_footprint(lat: float, lon: float, max_distance_deg: float = 0.0012) -> Optional[Dict[str, Any]]:
+    best_entry: Optional[Dict[str, Any]] = None
+    best_distance = float("inf")
+
+    for entry in _load_footprint_cache():
+        geometry = entry.get("geometry")
+        properties = entry.get("properties")
+        if not isinstance(geometry, list) or len(geometry) < 4:
+            continue
+
+        center = entry.get("center")
+        if isinstance(center, dict):
+            center_lat = float(center.get("lat", 0.0))
+            center_lon = float(center.get("lon", 0.0))
+        else:
+            computed_center = _average_ring_center(geometry)
+            if not computed_center:
+                continue
+            center_lat = computed_center["lat"]
+            center_lon = computed_center["lon"]
+
+        distance = math.sqrt(((center_lat - lat) ** 2) + ((center_lon - lon) ** 2))
+        if distance < best_distance:
+            best_distance = distance
+            best_entry = {
+                "available": True,
+                "source": "footprint_cache",
+                "geometry": geometry,
+                "properties": _sanitize_properties(properties),
+            }
+
+    if best_entry and best_distance <= max_distance_deg:
+        return best_entry
+    return None
+
+
 async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
     api_key = os.getenv("VWORLD_API_KEY")
     preferred_type_name = os.getenv("VWORLD_WFS_TYPENAME")
 
+    cached_match = _match_cached_footprint(lat, lon)
+
     if not api_key:
-        return {
+        return cached_match or {
             "available": False,
             "source": "vworld_wfs",
             "reason": "missing_vworld_api_key",
         }
 
     try:
-        type_name = preferred_type_name
+        type_name = preferred_type_name or DEFAULT_VWORLD_TYPENAME
 
-        if not type_name:
+        if not preferred_type_name:
             capabilities_text = await asyncio.to_thread(
-                _fetch_text_sync,
+                _fetch_text_with_retries_sync,
                 {
                     "SERVICE": "WFS",
                     "REQUEST": "GetCapabilities",
@@ -180,7 +259,7 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
 
         bbox = _build_bbox(lat, lon)
         payload_text = await asyncio.to_thread(
-            _fetch_text_sync,
+            _fetch_text_with_retries_sync,
             {
                 "SERVICE": "WFS",
                 "REQUEST": "GetFeature",
@@ -212,7 +291,7 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
             if isinstance(feature, dict) and (_get_polygon_ring(feature) or [])
         ]
         if not polygon_features:
-            return {
+            return cached_match or {
                 "available": False,
                 "source": "vworld_wfs",
                 "typeName": type_name,
@@ -222,7 +301,7 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
         nearest = min(polygon_features, key=lambda feature: _distance_to_point(feature, lat, lon))
         geometry = _get_polygon_ring(nearest)
         if not geometry or len(geometry) < 4:
-            return {
+            return cached_match or {
                 "available": False,
                 "source": "vworld_wfs",
                 "typeName": type_name,
@@ -241,14 +320,14 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
             detail = error.read().decode("utf-8", "replace")[:400]
         except Exception:
             detail = str(error)
-        return {
+        return cached_match or {
             "available": False,
             "source": "vworld_wfs",
             "reason": "feature_request_failed",
             "detail": detail,
         }
     except Exception as error:
-        return {
+        return cached_match or {
             "available": False,
             "source": "vworld_wfs",
             "reason": "unexpected_error",
