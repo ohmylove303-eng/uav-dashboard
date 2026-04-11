@@ -836,12 +836,6 @@ async def evaluate_flight(request: EvaluationRequest):
     if source_suffixes:
         weather["source"] = f'{weather.get("source", "open_meteo_surface")} + {", ".join(source_suffixes)}'
 
-    try:
-        profile_layers = build_profile_layers(weather, upper_air, wind_profiler)
-    except Exception as exc:
-        print(f"Profile Layers Build Error: {exc}")
-        profile_layers = []
-    
     # 2. Drone Specs
     spec = DRONE_SPECS[request.drone_model]
     
@@ -901,7 +895,7 @@ async def evaluate_flight(request: EvaluationRequest):
             "wind_speed_mps": round(selected_layer["wind_speed_mps"], 2),
             "density": weather.get("upper_air_density")
         } if selected_layer else None,
-        profile_layers=profile_layers
+        profile_layers=None
     )
 
 # Building Height API
