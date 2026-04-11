@@ -86,9 +86,15 @@ WIS2_STATION_CACHE: Dict[int, Dict[str, Any]] = {}
 WEATHER_CACHE_TTL_S = float(os.getenv("WEATHER_CACHE_TTL_S", "180"))
 UPPER_AIR_CACHE_TTL_S = float(os.getenv("UPPER_AIR_CACHE_TTL_S", "900"))
 WIND_PROFILER_CACHE_TTL_S = float(os.getenv("WIND_PROFILER_CACHE_TTL_S", "300"))
+WEATHER_STALE_TTL_S = float(os.getenv("WEATHER_STALE_TTL_S", "1800"))
+UPPER_AIR_STALE_TTL_S = float(os.getenv("UPPER_AIR_STALE_TTL_S", "21600"))
+WIND_PROFILER_STALE_TTL_S = float(os.getenv("WIND_PROFILER_STALE_TTL_S", "1800"))
 WEATHER_CACHE: Dict[str, Dict[str, Any]] = {}
 UPPER_AIR_CACHE: Dict[str, Dict[str, Any]] = {}
 WIND_PROFILER_CACHE: Dict[str, Dict[str, Any]] = {}
+WEATHER_LAST_GOOD_CACHE: Dict[str, Dict[str, Any]] = {}
+UPPER_AIR_LAST_GOOD_CACHE: Dict[str, Dict[str, Any]] = {}
+WIND_PROFILER_LAST_GOOD_CACHE: Dict[str, Dict[str, Any]] = {}
 
 class GateResult(BaseModel):
     gate: str
@@ -170,6 +176,26 @@ def _cache_set(store: Dict[str, Dict[str, Any]], key: str, value: Any):
     store[key] = {"ts": time.time(), "value": value}
     return value
 
+
+def _cache_get_stale(store: Dict[str, Dict[str, Any]], key: str, max_age_s: float):
+    entry = store.get(key)
+    if not entry:
+        return None
+    if (time.time() - entry["ts"]) > max_age_s:
+        store.pop(key, None)
+        return None
+    return entry["value"]
+
+
+def _mark_stale_payload(value: Any):
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        marked = dict(value)
+        marked["stale_cache"] = True
+        return marked
+    return value
+
 # ============================================
 # 기상 API 연동
 # ============================================
@@ -224,19 +250,32 @@ async def fetch_weather(lat: float, lon: float) -> Dict:
                     "cloud_cover": curr.get("cloud_cover", 0),
                     "sunrise": sunrise,
                     "sunset": sunset,
-                    "source": "open_meteo_surface"
+                    "source": "open_meteo_surface",
+                    "stale_cache": False
                 }
+                _cache_set(WEATHER_LAST_GOOD_CACHE, cache_key, result)
                 return _cache_set(WEATHER_CACHE, cache_key, result)
     except Exception as e:
         print(f"Weather Fetch Error: {e}")
-        pass
-        
+        stale = _cache_get_stale(WEATHER_LAST_GOOD_CACHE, cache_key, WEATHER_STALE_TTL_S)
+        if stale:
+            stale_result = dict(_mark_stale_payload(stale))
+            stale_result["source"] = f'{stale_result.get("source", "open_meteo_surface")} + stale_cache'
+            return stale_result
+
+    stale = _cache_get_stale(WEATHER_LAST_GOOD_CACHE, cache_key, WEATHER_STALE_TTL_S)
+    if stale:
+        stale_result = dict(_mark_stale_payload(stale))
+        stale_result["source"] = f'{stale_result.get("source", "open_meteo_surface")} + stale_cache'
+        return stale_result
+
     fallback = {
         "wind_speed": 5.0, "gust_speed": 8.0, "wind_direction": 0,
         "visibility": 10.0, "precipitation_prob": 10, "temperature": 20, 
         "dew_point": 15, "humidity": 50, "cloud_cover": 20,
         "weather_code": 0, "sunrise": "06:00", "sunset": "18:00",
-        "source": "surface_fallback"
+        "source": "surface_fallback",
+        "stale_cache": False
     }
     return _cache_set(WEATHER_CACHE, cache_key, fallback)
 
@@ -431,11 +470,18 @@ async def fetch_kma_upper_air_profile(lat: float, lon: float) -> Optional[Dict]:
                             "station_id": station["id"],
                             "station_name": station["name"],
                             "observed_at_utc": cycle,
-                            "layers": rows
+                            "layers": rows,
+                            "stale_cache": False
                         }
+                        _cache_set(UPPER_AIR_LAST_GOOD_CACHE, cache_key, result)
                         return _cache_set(UPPER_AIR_CACHE, cache_key, result)
                 except Exception:
                     continue
+
+    stale = _cache_get_stale(UPPER_AIR_LAST_GOOD_CACHE, cache_key, UPPER_AIR_STALE_TTL_S)
+    if stale:
+        return _mark_stale_payload(stale)
+
     return _cache_set(UPPER_AIR_CACHE, cache_key, None)
 
 
@@ -490,9 +536,16 @@ async def fetch_kma_wind_profiler_profile(lat: float, lon: float, mode: str = WI
                 "station_name": selected["station"]["name"],
                 "observed_at_utc": cycle,
                 "mode": mode,
-                "layers": selected["layers"]
+                "layers": selected["layers"],
+                "stale_cache": False
             }
+            _cache_set(WIND_PROFILER_LAST_GOOD_CACHE, cache_key, result)
             return _cache_set(WIND_PROFILER_CACHE, cache_key, result)
+
+    stale = _cache_get_stale(WIND_PROFILER_LAST_GOOD_CACHE, cache_key, WIND_PROFILER_STALE_TTL_S)
+    if stale:
+        return _mark_stale_payload(stale)
+
     return _cache_set(WIND_PROFILER_CACHE, cache_key, None)
 
 # ============================================
@@ -606,12 +659,21 @@ async def get_weather_api(lat: float = 37.5665, lon: float = 126.9780):
         fetch_kma_upper_air_profile(lat, lon),
         fetch_kma_wind_profiler_profile(lat, lon)
     )
+    source_suffixes = []
+    if w.get("stale_cache"):
+        source_suffixes.append("stale_surface_cache")
+    if upper_air and upper_air.get("stale_cache"):
+        source_suffixes.append("stale_upper_air_cache")
+    if wind_profiler and wind_profiler.get("stale_cache"):
+        source_suffixes.append("stale_wind_profiler_cache")
     if upper_air and wind_profiler:
         w["source"] = "kma_radiosonde + kma_wind_profiler + open_meteo_surface"
     elif upper_air:
         w["source"] = "kma_radiosonde + open_meteo_surface"
     elif wind_profiler:
         w["source"] = "kma_wind_profiler + open_meteo_surface"
+    if source_suffixes:
+        w["source"] = f'{w.get("source", "open_meteo_surface")} + {", ".join(source_suffixes)}'
     return {"weather": w}
 
 @app.post("/api/evaluate", response_model=EvaluationResponse)
@@ -642,6 +704,9 @@ async def evaluate_flight(request: EvaluationRequest):
     selected_layer = None
     profile_source = "surface_only"
     wind_profiler_layer = None
+    source_suffixes = []
+    if weather.get("stale_cache"):
+        source_suffixes.append("stale_surface_cache")
     if upper_air:
         selected_layer = interpolate_profile_layer(upper_air["layers"], request.mission_altitude)
         if selected_layer:
@@ -657,6 +722,8 @@ async def evaluate_flight(request: EvaluationRequest):
             )
             weather["source"] = "kma_radiosonde + open_meteo_surface"
             profile_source = "kma_radiosonde"
+            if upper_air.get("stale_cache"):
+                source_suffixes.append("stale_upper_air_cache")
 
     if wind_profiler:
         wind_profiler_layer = interpolate_profile_layer(wind_profiler["layers"], request.mission_altitude)
@@ -689,6 +756,11 @@ async def evaluate_flight(request: EvaluationRequest):
                 "kma_wind_profiler + open_meteo_surface"
             )
             profile_source = "kma_radiosonde_wind_profiler" if upper_air else "kma_wind_profiler"
+            if wind_profiler.get("stale_cache"):
+                source_suffixes.append("stale_wind_profiler_cache")
+
+    if source_suffixes:
+        weather["source"] = f'{weather.get("source", "open_meteo_surface")} + {", ".join(source_suffixes)}'
     
     # 2. Drone Specs
     spec = DRONE_SPECS[request.drone_model]
@@ -729,14 +801,16 @@ async def evaluate_flight(request: EvaluationRequest):
             "station_id": upper_air["station_id"],
             "station_name": upper_air["station_name"],
             "observed_at_utc": upper_air["observed_at_utc"],
-            "layer_count": len(upper_air["layers"])
+            "layer_count": len(upper_air["layers"]),
+            "stale_cache": upper_air.get("stale_cache", False)
         } if upper_air else None,
         wind_profiler_profile={
             "station_id": wind_profiler["station_id"],
             "station_name": wind_profiler["station_name"],
             "observed_at_utc": wind_profiler["observed_at_utc"],
             "mode": wind_profiler["mode"],
-            "layer_count": len(wind_profiler["layers"])
+            "layer_count": len(wind_profiler["layers"]),
+            "stale_cache": wind_profiler.get("stale_cache", False)
         } if wind_profiler else None,
         selected_layer={
             "height_m": round(selected_layer["height_m"], 1),
