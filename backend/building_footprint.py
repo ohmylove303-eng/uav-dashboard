@@ -23,7 +23,15 @@ from typing import Any, Dict, Iterable, List, Optional
 
 
 VWORLD_WFS_ENDPOINT = "https://api.vworld.kr/req/wfs"
-OVERPASS_ENDPOINT = os.getenv("OVERPASS_ENDPOINT", "https://overpass-api.de/api/interpreter")
+OVERPASS_ENDPOINTS = [
+    endpoint.strip()
+    for endpoint in (
+        os.getenv("OVERPASS_ENDPOINTS")
+        or os.getenv("OVERPASS_ENDPOINT")
+        or "https://overpass-api.de/api/interpreter,https://lz4.overpass-api.de/api/interpreter,https://overpass.kumi.systems/api/interpreter"
+    ).split(",")
+    if endpoint.strip()
+]
 DEFAULT_SEARCH_RADIUS_M = 40
 DEFAULT_MAX_FEATURES = 25
 DEFAULT_VWORLD_REFERER = "https://uav-vercel.vercel.app/"
@@ -172,6 +180,23 @@ def _post_text_sync(url: str, data: str, timeout_s: float = 20.0) -> str:
     )
     with urllib.request.urlopen(request, timeout=timeout_s) as response:
         return response.read().decode("utf-8", "replace")
+
+
+def _post_text_with_endpoint_fallback_sync(
+    urls: List[str],
+    data: str,
+    timeout_s: float = 20.0,
+) -> str:
+    last_error: Optional[Exception] = None
+    for url in urls:
+        try:
+            return _post_text_sync(url, data, timeout_s=timeout_s)
+        except Exception as error:
+            last_error = error
+            continue
+    if last_error:
+        raise last_error
+    raise RuntimeError("overpass_request_failed")
 
 
 def _fetch_text_with_retries_sync(
@@ -339,7 +364,7 @@ def _normalize_osm_ring(element: Dict[str, Any]) -> Optional[List[List[float]]]:
 def _lookup_osm_fallback_sync(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     try:
         query = urllib.parse.urlencode({"data": _osm_query(lat, lon)})
-        payload_text = _post_text_sync(OVERPASS_ENDPOINT, query, timeout_s=20.0)
+        payload_text = _post_text_with_endpoint_fallback_sync(OVERPASS_ENDPOINTS, query, timeout_s=20.0)
         payload = json.loads(payload_text)
     except Exception:
         return None
