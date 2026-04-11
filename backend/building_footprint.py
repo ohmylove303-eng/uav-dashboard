@@ -361,9 +361,9 @@ def _normalize_osm_ring(element: Dict[str, Any]) -> Optional[List[List[float]]]:
     return ring if len(ring) >= 4 else None
 
 
-def _lookup_osm_fallback_sync(lat: float, lon: float) -> Optional[Dict[str, Any]]:
+def _lookup_osm_fallback_sync(lat: float, lon: float, radius_m: float = 60.0) -> Optional[Dict[str, Any]]:
     try:
-        query = urllib.parse.urlencode({"data": _osm_query(lat, lon)})
+        query = urllib.parse.urlencode({"data": _osm_query(lat, lon, radius_m=radius_m)})
         payload_text = _post_text_with_endpoint_fallback_sync(OVERPASS_ENDPOINTS, query, timeout_s=20.0)
         payload = json.loads(payload_text)
     except Exception:
