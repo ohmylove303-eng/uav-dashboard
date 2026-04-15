@@ -95,6 +95,10 @@ WIND_PROFILER_CACHE: Dict[str, Dict[str, Any]] = {}
 WEATHER_LAST_GOOD_CACHE: Dict[str, Dict[str, Any]] = {}
 UPPER_AIR_LAST_GOOD_CACHE: Dict[str, Dict[str, Any]] = {}
 WIND_PROFILER_LAST_GOOD_CACHE: Dict[str, Dict[str, Any]] = {}
+KMA_UPPER_AIR_REQUEST_TIMEOUT_S = float(os.getenv("KMA_UPPER_AIR_REQUEST_TIMEOUT_S", "3.5"))
+KMA_WIND_PROFILER_REQUEST_TIMEOUT_S = float(os.getenv("KMA_WIND_PROFILER_REQUEST_TIMEOUT_S", "2.5"))
+SURFACE_WEATHER_REQUEST_TIMEOUT_S = float(os.getenv("SURFACE_WEATHER_REQUEST_TIMEOUT_S", "3.0"))
+KP_REQUEST_TIMEOUT_S = float(os.getenv("KP_REQUEST_TIMEOUT_S", "2.0"))
 
 class GateResult(BaseModel):
     gate: str
@@ -196,6 +200,97 @@ def _mark_stale_payload(value: Any):
         marked["stale_cache"] = True
         return marked
     return value
+
+
+def _cache_key_for_latlon(lat: float, lon: float) -> str:
+    return f"{_round_coord(lat)},{_round_coord(lon)}"
+
+
+def _mark_source_suffix(payload: Optional[Dict[str, Any]], suffix: str, fallback_source: str) -> Optional[Dict[str, Any]]:
+    if not payload:
+        return payload
+    marked = dict(payload)
+    marked["stale_cache"] = True
+    marked["source"] = f'{marked.get("source", fallback_source)} + {suffix}'
+    return marked
+
+
+async def fetch_kp_index_safe() -> float:
+    try:
+        return await asyncio.wait_for(fetch_kp_index(), timeout=KP_REQUEST_TIMEOUT_S)
+    except Exception:
+        return 3.0
+
+
+async def fetch_weather_safe(lat: float, lon: float) -> Dict:
+    cache_key = _cache_key_for_latlon(lat, lon)
+    try:
+        return await asyncio.wait_for(fetch_weather(lat, lon), timeout=SURFACE_WEATHER_REQUEST_TIMEOUT_S)
+    except Exception:
+        stale = _cache_get_stale(WEATHER_LAST_GOOD_CACHE, cache_key, WEATHER_STALE_TTL_S)
+        if stale:
+            return _mark_source_suffix(stale, "stale_surface_cache", "open_meteo_surface")
+        cached = _cache_get(WEATHER_CACHE, cache_key, WEATHER_CACHE_TTL_S)
+        if cached:
+            return _mark_source_suffix(cached, "memory_surface_cache", "open_meteo_surface")
+        return {
+            "wind_speed": 5.0,
+            "gust_speed": 8.0,
+            "wind_direction": 0,
+            "visibility": 10.0,
+            "precipitation_prob": 10,
+            "temperature": 20,
+            "dew_point": 15,
+            "humidity": 50,
+            "cloud_cover": 20,
+            "weather_code": 0,
+            "sunrise": "06:00",
+            "sunset": "18:00",
+            "source": "surface_fallback + timeout_guard",
+            "stale_cache": False
+        }
+
+
+async def fetch_kma_upper_air_profile_safe(lat: float, lon: float) -> Optional[Dict]:
+    cache_key = _cache_key_for_latlon(lat, lon)
+    try:
+        return await asyncio.wait_for(
+            fetch_kma_upper_air_profile(lat, lon),
+            timeout=KMA_UPPER_AIR_REQUEST_TIMEOUT_S
+        )
+    except Exception:
+        stale = _cache_get_stale(UPPER_AIR_LAST_GOOD_CACHE, cache_key, UPPER_AIR_STALE_TTL_S)
+        if stale:
+            marked = dict(stale)
+            marked["stale_cache"] = True
+            return marked
+        cached = _cache_get(UPPER_AIR_CACHE, cache_key, UPPER_AIR_CACHE_TTL_S)
+        if cached:
+            marked = dict(cached)
+            marked["stale_cache"] = True
+            return marked
+        return None
+
+
+async def fetch_kma_wind_profiler_profile_safe(lat: float, lon: float, mode: str = WIND_PROFILER_MODE) -> Optional[Dict]:
+    cache_key = f"{mode}:{_cache_key_for_latlon(lat, lon)}"
+    try:
+        return await asyncio.wait_for(
+            fetch_kma_wind_profiler_profile(lat, lon, mode),
+            timeout=KMA_WIND_PROFILER_REQUEST_TIMEOUT_S
+        )
+    except Exception:
+        stale = _cache_get_stale(WIND_PROFILER_LAST_GOOD_CACHE, cache_key, WIND_PROFILER_STALE_TTL_S)
+        if stale:
+            marked = dict(stale)
+            marked["stale_cache"] = True
+            return marked
+        cached = _cache_get(WIND_PROFILER_CACHE, cache_key, WIND_PROFILER_CACHE_TTL_S)
+        if cached:
+            marked = dict(cached)
+            marked["stale_cache"] = True
+            return marked
+        return None
 
 # ============================================
 # 기상 API 연동
@@ -726,12 +821,12 @@ async def get_kp_index_api():
 
 @app.get("/api/weather")
 async def get_weather_api(lat: float = 37.5665, lon: float = 126.9780):
-    w = await fetch_weather(lat, lon)
-    kp = await fetch_kp_index()
+    w = await fetch_weather_safe(lat, lon)
+    kp = await fetch_kp_index_safe()
     w["kp_index"] = kp
     upper_air, wind_profiler = await asyncio.gather(
-        fetch_kma_upper_air_profile(lat, lon),
-        fetch_kma_wind_profiler_profile(lat, lon)
+        fetch_kma_upper_air_profile_safe(lat, lon),
+        fetch_kma_wind_profiler_profile_safe(lat, lon)
     )
     source_suffixes = []
     if w.get("stale_cache"):
@@ -767,13 +862,13 @@ async def evaluate_flight(request: EvaluationRequest):
         }
         kp = request.kp_index or 3.0
     else:
-        weather = await fetch_weather(request.latitude, request.longitude)
-        kp = await fetch_kp_index()
+        weather = await fetch_weather_safe(request.latitude, request.longitude)
+        kp = await fetch_kp_index_safe()
     
     weather["kp_index"] = kp
     upper_air, wind_profiler = await asyncio.gather(
-        fetch_kma_upper_air_profile(request.latitude, request.longitude),
-        fetch_kma_wind_profiler_profile(request.latitude, request.longitude)
+        fetch_kma_upper_air_profile_safe(request.latitude, request.longitude),
+        fetch_kma_wind_profiler_profile_safe(request.latitude, request.longitude)
     )
     selected_layer = None
     profile_source = "surface_only"
