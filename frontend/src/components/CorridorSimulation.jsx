@@ -1,11 +1,17 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback } from 'react'
 import MapView from './MapView'
+import { fetchJson } from '../api'
 import './CorridorSimulation.css'
 
-// API 기본 URL
-const API_URL = 'http://localhost:8000'
+const DRONE_TYPES = [
+    'DJI Mini 3 Pro',
+    'DJI Mavic 3',
+    'DJI Matrice 300 RTK',
+    'DJI Inspire 3',
+    'Custom (Generic)'
+]
 
-function CorridorSimulation() {
+function CorridorSimulation({ apiBaseUrl = '' }) {
     // 출발/도착 위치
     const [pointA, setPointA] = useState(null)
     const [pointB, setPointB] = useState(null)
@@ -47,7 +53,7 @@ function CorridorSimulation() {
         setError(null)
 
         try {
-            const res = await fetch(`${API_URL}/api/corridor-analysis`, {
+            const data = await fetchJson(apiBaseUrl, '/api/corridor-analysis', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -59,14 +65,6 @@ function CorridorSimulation() {
                 })
             })
 
-            if (!res.ok) {
-                // 백엔드 API 미구현 시 모의 데이터 생성
-                const mockAnalysis = generateMockAnalysis()
-                setAnalysis(mockAnalysis)
-                return
-            }
-
-            const data = await res.json()
             setAnalysis(data)
         } catch (err) {
             // 백엔드 연결 실패 시 모의 데이터
@@ -83,9 +81,13 @@ function CorridorSimulation() {
             ? Math.sqrt(Math.pow((pointB.lat - pointA.lat) * 111000, 2) + Math.pow((pointB.lon - pointA.lon) * 88000, 2))
             : 1000
 
+        const routeSeed = Math.abs(
+            Math.sin((pointA.lat + pointA.lon + pointB.lat + pointB.lon + settings.altitude) * 1000)
+        )
         const segments = []
+
         for (let i = 0; i < settings.segmentCount; i++) {
-            const riskLevel = Math.random()
+            const riskLevel = (Math.sin((i + 1) * 12.9898 + routeSeed * 78.233) + 1) / 2
             let status = 'GO'
             if (riskLevel > 0.7) status = 'NO-GO'
             else if (riskLevel > 0.4) status = 'RESTRICT'
@@ -95,8 +97,8 @@ function CorridorSimulation() {
                 start_percent: (i / settings.segmentCount) * 100,
                 end_percent: ((i + 1) / settings.segmentCount) * 100,
                 status,
-                wind_speed: (Math.random() * 8 + 2).toFixed(1),
-                building_height: Math.floor(Math.random() * 30 + 10),
+                wind_speed: (riskLevel * 8 + 2).toFixed(1),
+                building_height: Math.floor(riskLevel * 30 + 10),
                 reason: status === 'GO' ? '안전 통과 가능' :
                     status === 'RESTRICT' ? '주의 필요 (건물 근접)' : '비행 불가 (고층 건물)'
             })
@@ -181,6 +183,7 @@ function CorridorSimulation() {
                             onLocationSelect={handleMapClick}
                             pointA={pointA}
                             pointB={pointB}
+                            showPrimaryMarker={false}
                         />
                     </div>
                 </section>
@@ -218,9 +221,9 @@ function CorridorSimulation() {
                                 value={settings.droneType}
                                 onChange={e => setSettings(s => ({ ...s, droneType: e.target.value }))}
                             >
-                                <option value="DJI Mini 3 Pro">DJI Mini 3 Pro</option>
-                                <option value="DJI Mavic 3">DJI Mavic 3</option>
-                                <option value="DJI Matrice 30">DJI Matrice 30</option>
+                                {DRONE_TYPES.map(type => (
+                                    <option key={type} value={type}>{type}</option>
+                                ))}
                             </select>
                         </div>
 

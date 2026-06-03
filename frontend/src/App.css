@@ -1,16 +1,18 @@
 /* UAV 도시 운용판정 대시보드 CSS */
 
 :root {
-  --color-bg: #0f172a;
-  --color-surface: #1e293b;
-  --color-border: #334155;
+  --color-bg: #111827;
+  --color-surface: #1f2937;
+  --color-surface-muted: #17212f;
+  --color-border: #374151;
   --color-text: #f1f5f9;
-  --color-text-secondary: #94a3b8;
-  --color-primary: #3b82f6;
+  --color-text-secondary: #a7b0bf;
+  --color-primary: #38bdf8;
+  --color-accent: #14b8a6;
   --color-success: #22c55e;
   --color-warning: #eab308;
   --color-danger: #ef4444;
-  --radius: 12px;
+  --radius: 8px;
 }
 
 * {
@@ -34,7 +36,7 @@ body {
 
 /* Header */
 .header {
-  background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%);
+  background: linear-gradient(135deg, #12343b 0%, #14532d 100%);
   padding: 20px 30px;
   text-align: center;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
@@ -84,6 +86,76 @@ body {
   width: 100%;
   position: relative;
   z-index: 10;
+  min-height: 330px;
+}
+
+.uav-map-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+  overflow: hidden;
+  isolation: isolate;
+  background: #07111e;
+}
+
+.vworld-3d-base,
+.leaflet-overlay-map {
+  position: absolute !important;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.vworld-3d-base {
+  z-index: 0;
+  background: #07111e;
+}
+
+.vworld-3d-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.leaflet-overlay-map.leaflet-container {
+  z-index: 2;
+  background: transparent !important;
+}
+
+.leaflet-overlay-map.is-3d-base .leaflet-tile-pane {
+  display: none;
+}
+
+.leaflet-overlay-map.is-3d-base .leaflet-control-attribution {
+  display: none;
+}
+
+.leaflet-overlay-map .leaflet-control-zoom a {
+  background: rgba(17, 24, 39, 0.88);
+  border-color: rgba(148, 163, 184, 0.45);
+  color: var(--color-text);
+}
+
+.vworld-3d-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 3;
+  max-width: calc(100% - 20px);
+  padding: 6px 9px;
+  border: 1px solid rgba(148, 163, 184, 0.38);
+  border-radius: 4px;
+  background: rgba(7, 17, 30, 0.82);
+  color: #dbeafe;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.2;
+  pointer-events: none;
+}
+
+.uav-map-shell.has-vworld-3d .vworld-3d-badge {
+  color: #a7f3d0;
+  border-color: rgba(20, 184, 166, 0.45);
 }
 
 .map-info {
@@ -94,10 +166,13 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
 }
 
 .building-badge {
-  background: var(--color-primary);
+  background: rgba(20, 184, 166, 0.18);
+  color: #99f6e4;
+  border: 1px solid rgba(20, 184, 166, 0.35);
   padding: 4px 8px;
   border-radius: 4px;
   font-size: 0.85rem;
@@ -108,6 +183,11 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.input-with-hint input {
+  flex: 1;
+  min-width: 0;
 }
 
 .hint {
@@ -148,6 +228,8 @@ body {
 
 .form-row input,
 .form-row select {
+  width: 100%;
+  min-width: 0;
   padding: 10px;
   border-radius: 8px;
   border: 1px solid var(--color-border);
@@ -191,7 +273,7 @@ body {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, var(--color-primary), #2563eb);
+  background: linear-gradient(135deg, #0891b2, #0f766e);
   color: white;
   width: 100%;
   margin-top: 15px;
@@ -217,6 +299,104 @@ body {
   background: var(--color-text-secondary);
 }
 
+button,
+input,
+select {
+  font: inherit;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* API Status */
+.api-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 20px;
+  background: #151f2e;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.api-status-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.api-status-main div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.api-status-main strong {
+  font-size: 0.9rem;
+}
+
+.api-status-main span:last-child {
+  color: var(--color-text-secondary);
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.api-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--color-warning);
+  flex: 0 0 auto;
+}
+
+.api-status-bar.online .api-status-dot {
+  background: var(--color-success);
+}
+
+.api-status-bar.offline .api-status-dot {
+  background: var(--color-danger);
+}
+
+.api-url-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 560px;
+}
+
+.api-url-form input {
+  min-width: 180px;
+  flex: 1;
+  padding: 9px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.api-url-form button {
+  min-width: 64px;
+  height: 38px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: #243244;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.api-url-form button[type="submit"] {
+  border-color: rgba(20, 184, 166, 0.45);
+  background: #0f766e;
+}
+
 /* Right Panel */
 .right-panel {
   display: flex;
@@ -236,6 +416,24 @@ body {
   margin-bottom: 15px;
 }
 
+.panel-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 12px;
+  margin-bottom: 15px;
+}
+
+.panel-heading h3 {
+  margin: 0;
+}
+
+.panel-heading span {
+  color: var(--color-text-secondary);
+  font-size: 0.78rem;
+  text-align: right;
+}
+
 .weather-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -243,7 +441,7 @@ body {
 }
 
 .weather-item {
-  background: var(--color-bg);
+  background: var(--color-surface-muted);
   padding: 15px;
   border-radius: 8px;
   text-align: center;
@@ -281,7 +479,7 @@ body {
 }
 
 .gate-item {
-  background: var(--color-bg);
+  background: var(--color-surface-muted);
   padding: 15px 10px;
   border-radius: 8px;
   text-align: center;
@@ -377,7 +575,7 @@ body {
 }
 
 .layer-item {
-  background: var(--color-bg);
+  background: var(--color-surface-muted);
   padding: 10px 15px;
   border-radius: 8px;
   display: flex;
@@ -395,6 +593,28 @@ body {
   font-size: 1.1rem;
   font-weight: 600;
   color: var(--color-primary);
+}
+
+.layer-density {
+  color: var(--color-text-secondary);
+  font-size: 0.72rem;
+  margin-top: 3px;
+}
+
+.spec-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.spec-strip span {
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-text-secondary);
+  font-size: 0.78rem;
+  padding: 6px 9px;
 }
 
 /* Final Judgment */
@@ -424,6 +644,38 @@ body {
   color: var(--color-danger);
 }
 
+.offline-panel {
+  background: rgba(234, 179, 8, 0.12);
+  border: 1px solid rgba(234, 179, 8, 0.45);
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  color: #fde68a;
+  font-size: 0.9rem;
+}
+
+.empty-state {
+  color: var(--color-text-secondary);
+  font-size: 0.9rem;
+}
+
+.route-marker {
+  background: transparent;
+  border: 0;
+}
+
+.route-marker span {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--marker-color);
+  color: #06121f;
+  border: 3px solid white;
+  font-weight: 800;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+}
+
 /* Footer */
 .footer {
   background: var(--color-surface);
@@ -440,7 +692,7 @@ body {
 
 /* Feature Banner */
 .feature-banner {
-  background: linear-gradient(135deg, #1e3a8a, #7c3aed);
+  background: linear-gradient(135deg, #0f766e, #854d0e);
   padding: 12px 20px;
   display: flex;
   align-items: center;
@@ -471,7 +723,7 @@ body {
 }
 
 .feature-banner .banner-text strong {
-  background: #22c55e;
+  background: #0f172a;
   padding: 2px 8px;
   border-radius: 4px;
   margin-right: 8px;
@@ -517,14 +769,14 @@ body {
 }
 
 .tab-btn:hover {
-  background: rgba(59, 130, 246, 0.1);
+  background: rgba(56, 189, 248, 0.1);
   color: var(--color-text);
 }
 
 .tab-btn.active {
   color: var(--color-primary);
   border-bottom-color: var(--color-primary);
-  background: rgba(59, 130, 246, 0.1);
+  background: rgba(56, 189, 248, 0.1);
 }
 
 .tab-btn .tab-label {
@@ -571,6 +823,15 @@ body {
     grid-template-columns: 1fr;
   }
 
+  .api-status-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .api-url-form {
+    flex: 1;
+  }
+
   .gates-grid {
     grid-template-columns: repeat(3, 1fr);
   }
@@ -583,6 +844,42 @@ body {
 @media (max-width: 600px) {
   .header h1 {
     font-size: 1.4rem;
+  }
+
+  .header {
+    padding: 18px 16px;
+  }
+
+  .main,
+  .corridor-simulation {
+    padding: 14px;
+  }
+
+  .tab-navigation {
+    padding: 0;
+  }
+
+  .tab-btn {
+    flex: 1;
+    padding: 13px 10px;
+  }
+
+  .tab-btn .tab-label {
+    font-size: 0.95rem;
+  }
+
+  .api-url-form {
+    display: grid;
+    grid-template-columns: 1fr 74px 74px;
+  }
+
+  .api-url-form input {
+    min-width: 0;
+  }
+
+  .map-info {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .gates-grid {

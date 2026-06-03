@@ -34,7 +34,7 @@ OVERPASS_ENDPOINTS = [
 ]
 DEFAULT_SEARCH_RADIUS_M = 40
 DEFAULT_MAX_FEATURES = 25
-DEFAULT_VWORLD_REFERER = "https://uav-vercel.vercel.app/"
+DEFAULT_VWORLD_REFERER = "http://localhost:8000/"
 DEFAULT_VWORLD_TYPENAME = "lt_c_spbd"
 BUILDING_KEYWORDS = ("bldg", "build", "building", "건물", "bd")
 FOOTPRINT_CACHE_PATH = os.path.join(os.path.dirname(__file__), "static", "footprint_cache.json")

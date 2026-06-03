@@ -28,21 +28,14 @@
 | **연속지적도** | 지번, 경계 | 비행 구역 상세 확인 |
 | **비행금지구역** | (일부 제공) | Gate0 하드스탑 참고 |
 
-## 3. 프론트엔드 변경 (Leaflet + VWorld)
+## 3. 프론트엔드 설정 (VWorld 3D 기본 지도)
 
-Google Maps 대신 오픈소스인 Leaflet을 사용하여 VWorld 타일을 불러옵니다.
+드론 대시보드는 VWorld 3D WebGL 지도를 기본 지도로 사용하고, 기존 Leaflet 마커/경로/분석 레이어는 위에 그대로 표시합니다.
 
-### 설치
+### 환경 변수
 ```bash
-npm install leaflet react-leaflet
+VITE_VWORLD_API_KEY=발급받은_VWorld_인증키
 ```
 
-### 코드 예시
-```javascript
-<MapContainer center={[37.5665, 126.9780]} zoom={15}>
-  <TileLayer
-    url="https://api.vworld.kr/req/wmts/1.0.0/{apiKey}/Base/{z}/{y}/{x}.png"
-    attribution="&copy; VWorld"
-  />
-</MapContainer>
-```
+Vercel 배포 환경에도 같은 값을 추가해야 배포 사이트에서 3D 건물이 기본으로 표시됩니다.
+키가 없거나 VWorld 스크립트가 실패하면 기존 2D OpenStreetMap으로 자동 대체됩니다.

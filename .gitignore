@@ -41,3 +41,11 @@ venv/
 node_modules/
 dist/
 .DS_Store
+node_modules
+.venv
+dist
+build
+.idx
+.codex
+backend/static/assets/
+backend/static/drone.svg

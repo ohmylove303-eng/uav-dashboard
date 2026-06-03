@@ -6,7 +6,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta, timezone
@@ -14,6 +14,7 @@ from enum import Enum
 import httpx
 import asyncio
 import os
+import json
 import math
 import time
 
@@ -42,6 +43,33 @@ async def add_no_cache_header(request, call_next):
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
     return response
+
+CLIENT_RUNTIME_ENV_KEYS = (
+    "VITE_API_URL",
+    "VITE_API_BASE_URL",
+    "VITE_VWORLD_API_KEY",
+    "VITE_VWORLD_3D_API_KEY",
+    "VITE_VWORLD_KEY",
+    "VWORLD_API_KEY",
+)
+
+
+@app.get("/runtime-config.js")
+async def runtime_config_js():
+    runtime_config = {}
+    for key in CLIENT_RUNTIME_ENV_KEYS:
+        value = os.getenv(key)
+        if value:
+            runtime_config[key] = value
+
+    payload = "window.__UAV_RUNTIME_CONFIG__ = " + json.dumps(runtime_config, ensure_ascii=False) + ";"
+    return Response(content=payload, media_type="application/javascript")
+
+
+@app.get("/drone.svg")
+async def drone_icon():
+    return FileResponse('static/drone.svg')
+
 
 @app.get("/")
 async def read_root():
@@ -161,6 +189,19 @@ class EvaluationResponse(BaseModel):
     wind_profiler_profile: Optional[Dict] = None
     selected_layer: Optional[Dict] = None
     profile_layers: Optional[List[Dict]] = None
+
+
+class RoutePoint(BaseModel):
+    lat: float
+    lon: float
+
+
+class CorridorAnalysisRequest(BaseModel):
+    point_a: RoutePoint
+    point_b: RoutePoint
+    altitude: float = Field(50.0, ge=5.0, le=500.0)
+    segment_count: int = Field(5, ge=2, le=20)
+    drone_type: str = Field(DroneModel.MAVIC_3.value)
 
 
 def _round_coord(value: float, precision: int = 3) -> float:
@@ -486,14 +527,19 @@ def interpolate_profile_layer(profile: List[Dict], mission_altitude: float) -> O
     if span <= 0:
         return dict(lower)
     ratio = (mission_altitude - lower["height_m"]) / span
-    return {
-        "pressure_hpa": lower["pressure_hpa"] + (upper["pressure_hpa"] - lower["pressure_hpa"]) * ratio,
-        "height_m": mission_altitude,
-        "temperature_c": lower["temperature_c"] + (upper["temperature_c"] - lower["temperature_c"]) * ratio,
-        "dew_point_c": lower["dew_point_c"] + (upper["dew_point_c"] - lower["dew_point_c"]) * ratio,
-        "wind_direction_deg": lower["wind_direction_deg"] + (upper["wind_direction_deg"] - lower["wind_direction_deg"]) * ratio,
-        "wind_speed_mps": lower["wind_speed_mps"] + (upper["wind_speed_mps"] - lower["wind_speed_mps"]) * ratio
-    }
+    layer = {"height_m": mission_altitude}
+    for key in ["pressure_hpa", "temperature_c", "dew_point_c", "wind_direction_deg", "wind_speed_mps"]:
+        lower_value = lower.get(key)
+        upper_value = upper.get(key)
+        if lower_value is None and upper_value is None:
+            continue
+        if lower_value is None:
+            layer[key] = upper_value
+        elif upper_value is None:
+            layer[key] = lower_value
+        else:
+            layer[key] = lower_value + (upper_value - lower_value) * ratio
+    return layer
 
 
 def build_surface_anchor(weather: Dict) -> Dict:
@@ -776,6 +822,51 @@ def evaluate_gate4(gust: float, drone_spec: Dict) -> GateResult:
         return GateResult(gate="Gate4", status=JudgmentLevel.GO, reason=f"✅안전 ({msg})", value=effective_gust)
     return GateResult(gate="Gate4", status=JudgmentLevel.NO_GO, reason=f"❌비행 위험: 돌풍 ({msg})", value=effective_gust, threshold=str(limit))
 
+
+def resolve_drone_spec(drone_type: str) -> Dict:
+    try:
+        return DRONE_SPECS[DroneModel(drone_type)]
+    except ValueError:
+        return DRONE_SPECS[DroneModel.MAVIC_3]
+
+
+def haversine_distance_m(a: RoutePoint, b: RoutePoint) -> float:
+    radius_m = 6371000
+    lat1 = math.radians(a.lat)
+    lat2 = math.radians(b.lat)
+    dlat = math.radians(b.lat - a.lat)
+    dlon = math.radians(b.lon - a.lon)
+    h = (
+        math.sin(dlat / 2) ** 2 +
+        math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    )
+    return 2 * radius_m * math.asin(math.sqrt(h))
+
+
+def interpolate_route_point(a: RoutePoint, b: RoutePoint, ratio: float) -> Dict[str, float]:
+    return {
+        "lat": a.lat + (b.lat - a.lat) * ratio,
+        "lon": a.lon + (b.lon - a.lon) * ratio,
+    }
+
+
+def worst_judgment(statuses: List[JudgmentLevel]) -> JudgmentLevel:
+    if JudgmentLevel.NO_GO in statuses:
+        return JudgmentLevel.NO_GO
+    if JudgmentLevel.RESTRICT in statuses:
+        return JudgmentLevel.RESTRICT
+    return JudgmentLevel.GO
+
+
+def estimate_route_building_height(lat: float, lon: float) -> float:
+    try:
+        from building_height import predict_building_height
+        result = predict_building_height(lat, lon)
+        return float(result.get("estimated_height_m", 25.0))
+    except Exception:
+        return round(18.0 + abs(math.sin(lat * 41.7 + lon * 17.3)) * 35.0, 1)
+
+
 # ============================================
 # API 엔드포인트
 # ============================================
@@ -938,9 +1029,11 @@ async def evaluate_flight(request: EvaluationRequest):
     align_factor = {"일치": 1.3, "직각": 0.9, "불명": 1.1}.get(request.wind_alignment, 1.0)
     fcanyon = calculate_fcanyon(request.building_height, request.street_width)
     ews = calculate_ews(weather["wind_speed"], fcanyon, align_factor)
+    hw_ratio = request.building_height / request.street_width if request.street_width > 0 else 1.0
     
     urban_factors = {
         "H": request.building_height, "W": request.street_width,
+        "H_W_ratio": round(hw_ratio, 2),
         "Fcanyon": round(fcanyon, 2), "alignment_factor": align_factor,
         "mission_altitude": request.mission_altitude
     }
@@ -958,6 +1051,14 @@ async def evaluate_flight(request: EvaluationRequest):
     final = JudgmentLevel.GO
     if any(g.status == JudgmentLevel.NO_GO for g in gates): final = JudgmentLevel.NO_GO
     elif any(g.status == JudgmentLevel.RESTRICT for g in gates): final = JudgmentLevel.RESTRICT
+    profile_max_altitude = int(max(50, min(200, math.ceil(request.mission_altitude / 5) * 5)))
+    profile_layers = build_profile_layers(
+        weather,
+        upper_air,
+        wind_profiler,
+        altitude_max_m=profile_max_altitude,
+        step_m=5
+    )
     
     return EvaluationResponse(
         timestamp=datetime.now().isoformat(),
@@ -990,8 +1091,86 @@ async def evaluate_flight(request: EvaluationRequest):
             "wind_speed_mps": round(selected_layer["wind_speed_mps"], 2),
             "density": weather.get("upper_air_density")
         } if selected_layer else None,
-        profile_layers=None
+        profile_layers=profile_layers
     )
+
+
+@app.post("/api/corridor-analysis")
+async def analyze_corridor(request: CorridorAnalysisRequest):
+    segment_count = max(2, min(request.segment_count, 20))
+    total_distance = haversine_distance_m(request.point_a, request.point_b)
+    midpoint = interpolate_route_point(request.point_a, request.point_b, 0.5)
+    weather = await fetch_weather_safe(midpoint["lat"], midpoint["lon"])
+    spec = resolve_drone_spec(request.drone_type)
+    segments = []
+
+    for idx in range(segment_count):
+        start_ratio = idx / segment_count
+        end_ratio = (idx + 1) / segment_count
+        mid_ratio = (start_ratio + end_ratio) / 2
+        point = interpolate_route_point(request.point_a, request.point_b, mid_ratio)
+        building_height = estimate_route_building_height(point["lat"], point["lon"])
+        street_width = 12.0 + abs(math.cos(point["lat"] * 29.0 + point["lon"] * 13.0)) * 14.0
+        fcanyon = calculate_fcanyon(building_height, street_width)
+        ews = calculate_ews(weather["wind_speed"], fcanyon, 1.1)
+        wind_gate = evaluate_gate3(ews, spec)
+        gust_gate = evaluate_gate4(weather["gust_speed"], spec)
+
+        rain_blocked = weather.get("precipitation_prob", 0) >= 70 or weather.get("weather_code", 0) >= 51
+        visibility = weather.get("visibility", 10)
+        vis_status = (
+            JudgmentLevel.GO if visibility >= 3
+            else JudgmentLevel.NO_GO if visibility < 1
+            else JudgmentLevel.RESTRICT
+        )
+        segment_status = worst_judgment([
+            JudgmentLevel.NO_GO if rain_blocked else JudgmentLevel.GO,
+            vis_status,
+            wind_gate.status,
+            gust_gate.status
+        ])
+
+        reasons = []
+        if rain_blocked:
+            reasons.append("강수 조건")
+        if vis_status != JudgmentLevel.GO:
+            reasons.append(f"시정 {visibility:.1f}km")
+        if wind_gate.status != JudgmentLevel.GO:
+            reasons.append(wind_gate.reason.replace("✅", "").replace("⚠️", "").replace("❌", "").strip())
+        if gust_gate.status != JudgmentLevel.GO:
+            reasons.append(gust_gate.reason.replace("✅", "").replace("⚠️", "").replace("❌", "").strip())
+
+        segments.append({
+            "id": idx + 1,
+            "start_percent": round(start_ratio * 100, 1),
+            "end_percent": round(end_ratio * 100, 1),
+            "status": segment_status.value,
+            "wind_speed": round(weather["wind_speed"], 1),
+            "ews": round(ews, 1),
+            "building_height": round(building_height, 1),
+            "street_width": round(street_width, 1),
+            "reason": " / ".join(reasons) if reasons else "안전 통과 가능"
+        })
+
+    overall = worst_judgment([JudgmentLevel(segment["status"]) for segment in segments])
+    max_building_height = max(segment["building_height"] for segment in segments)
+    recommended_altitude = request.altitude
+    if overall == JudgmentLevel.NO_GO:
+        recommended_altitude = max(request.altitude + 20, max_building_height + 15)
+    elif overall == JudgmentLevel.RESTRICT:
+        recommended_altitude = max(request.altitude, max_building_height + 10)
+
+    return {
+        "distance_m": round(total_distance),
+        "flight_time_min": round(total_distance / 10 / 60, 1),
+        "overall_judgment": overall.value,
+        "segments": segments,
+        "recommended_altitude": round(recommended_altitude, 1),
+        "alternative_route": "고층/강풍 구간 우회 권장" if overall == JudgmentLevel.NO_GO else None,
+        "weather_source": weather.get("source", "unknown"),
+        "drone_spec": spec
+    }
+
 
 # Building Height API
 try:

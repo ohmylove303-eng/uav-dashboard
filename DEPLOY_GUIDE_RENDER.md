@@ -29,21 +29,19 @@ git push -u origin main
 2. **New +** 버튼을 누르고 **Web Service**를 선택합니다.
 3. **Build and deploy from a Git repository**를 선택하고 [Next]를 누릅니다.
 4. 방금 올린 `ohmylove303-eng/uav-dashboard` 저장소를 찾아 **Connect**를 누릅니다.
+5. 이번 레포는 루트의 `render.yaml`과 `Dockerfile`을 사용하므로, Render가 자동으로 Docker 서비스로 인식합니다.
 
 ---
 
 ## 3단계: 배포 설정 (중요 🌟)
-가장 중요한 단계입니다. 아래 설정을 정확히 입력해야 합니다.
+아래 값만 맞추면 됩니다.
 
 | 항목 | 설정값 | 설명 |
 | :--- | :--- | :--- |
 | **Name** | `uav-dashboard` | 원하는 이름 |
 | **Region** | `Singapore` | 한국과 가까워 속도가 빠름 |
 | **Branch** | `main` | 기본값 |
-| **Root Directory** | `backend` | **(필수)** Python 코드가 있는 폴더 지정 |
-| **Runtime** | `Python 3` | |
-| **Build Command** | `pip install -r requirements.txt` | 패키지 설치 명령어 |
-| **Start Command** | `uvicorn main:app --host 0.0.0.0 --port 10000` | 서버 실행 명령어 |
+| **Environment** | `Docker` | 루트 `Dockerfile` 사용 |
 | **Plan** | `Free` | 무료 플랜 선택 |
 
 ### 환경 변수 (Environment Variables)
@@ -51,8 +49,8 @@ git push -u origin main
 
 | 변수명 | 설명 |
 | :--- | :--- |
-| `VWORLD_API_KEY` | VWorld 개발자센터에서 발급한 WFS 인증키 |
-| `VWORLD_REFERER` | 개발키 Referer. 운영 기준 `https://uav-vercel.vercel.app/` |
+| `VWORLD_API_KEY` | VWorld 개발자센터에서 발급한 인증키. 프론트와 백엔드가 함께 사용 가능 |
+| `VWORLD_REFERER` | VWorld 개발자센터에 등록한 운영 도메인 Referer |
 | `VWORLD_WFS_TYPENAME` | 선택값. 비워두면 기본값 `lt_c_spbd`를 사용 |
 
 기상청 상층자료를 계속 쓸 경우 아래도 추가합니다.
