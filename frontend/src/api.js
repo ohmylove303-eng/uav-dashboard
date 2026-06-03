@@ -2,15 +2,20 @@ import { getRuntimeConfigValue } from './runtimeConfig'
 
 const STORAGE_KEY = 'uav_api_base_url'
 
+function getImportMetaEnv() {
+    return (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env : {}
+}
+
 export function normalizeApiBaseUrl(value = '') {
     return value.trim().replace(/\/+$/, '')
 }
 
 export function getDefaultApiBaseUrl() {
+    const env = getImportMetaEnv()
     return normalizeApiBaseUrl(
         getRuntimeConfigValue('VITE_API_URL', 'VITE_API_BASE_URL') ||
-        import.meta.env.VITE_API_URL ||
-        import.meta.env.VITE_API_BASE_URL ||
+        env.VITE_API_URL ||
+        env.VITE_API_BASE_URL ||
         ''
     )
 }

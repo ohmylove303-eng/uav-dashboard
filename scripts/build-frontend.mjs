@@ -21,6 +21,7 @@ await esbuild({
     bundle: true,
     format: 'esm',
     platform: 'browser',
+    jsx: 'automatic',
     outdir: assetsRoot,
     entryNames: 'app',
     assetNames: '[name]',

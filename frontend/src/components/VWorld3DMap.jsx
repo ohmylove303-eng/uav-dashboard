@@ -6,8 +6,12 @@ const DEFAULT_ALTITUDE = 1800
 
 let scriptPromise = null
 
+function getImportMetaEnv() {
+    return (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env : {}
+}
+
 function getVWorldApiKey() {
-    const env = import.meta.env || {}
+    const env = getImportMetaEnv()
     return (
         getRuntimeConfigValue(
             'VITE_VWORLD_API_KEY',
