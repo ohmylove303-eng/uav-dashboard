@@ -65,6 +65,78 @@ function getWorstStatus(statuses) {
     ), 'GO')
 }
 
+function normalizeSourceChain(sourceChain) {
+    if (Array.isArray(sourceChain)) {
+        return sourceChain.map(item => String(item).trim()).filter(Boolean)
+    }
+
+    if (typeof sourceChain === 'string' && sourceChain.trim()) {
+        return sourceChain
+            .split(' + ')
+            .map(item => item.trim())
+            .filter(Boolean)
+    }
+
+    return []
+}
+
+function combineSourceChains(...chains) {
+    const merged = []
+    const seen = new Set()
+
+    chains.flatMap(normalizeSourceChain).forEach(item => {
+        if (seen.has(item)) return
+        seen.add(item)
+        merged.push(item)
+    })
+
+    return merged
+}
+
+function formatSourceChain(sourceChain) {
+    const normalized = normalizeSourceChain(sourceChain)
+    return normalized.length ? normalized.join(' · ') : '-'
+}
+
+function resolveBuildingConfidence(...values) {
+    const numbers = values
+        .map(value => Number(value))
+        .filter(value => Number.isFinite(value))
+
+    if (!numbers.length) {
+        return null
+    }
+
+    return Number((numbers.reduce((sum, value) => sum + value, 0) / numbers.length).toFixed(2))
+}
+
+function buildBuildingProvenance(heightData, footprintData) {
+    const heightSourceChain = normalizeSourceChain(heightData?.source_chain)
+    const footprintSourceChain = normalizeSourceChain(footprintData?.source_chain)
+    const sourceChain = combineSourceChains(heightSourceChain, footprintSourceChain)
+    const buildingSource = footprintData?.available
+        ? footprintData?.source || heightData?.source || 'building_profile'
+        : heightData?.source || footprintData?.source || 'building_profile'
+    const buildingProfileSource = heightData?.profile_source || footprintData?.profile_source || 'coordinate_based'
+    const confidence = resolveBuildingConfidence(
+        heightData?.building_confidence ?? heightData?.confidence,
+        footprintData?.building_confidence ?? footprintData?.confidence
+    )
+
+    return {
+        ...(heightData || {}),
+        footprint: footprintData || null,
+        building_source: buildingSource,
+        building_profile_source: buildingProfileSource,
+        building_source_chain: sourceChain,
+        building_confidence: confidence,
+        confidence: confidence ?? heightData?.confidence ?? footprintData?.confidence ?? null,
+        source_chain: sourceChain,
+        source: buildingSource,
+        profile_source: buildingProfileSource
+    }
+}
+
 function createFallbackWeather() {
     return {
         wind_speed: 5.0,
@@ -78,23 +150,50 @@ function createFallbackWeather() {
         cloud_cover: 20,
         kp_index: 3.0,
         source: 'browser_fallback',
+        source_chain: ['browser_fallback'],
+        profile_source: 'surface_only',
         stale_cache: false
     }
 }
 
-function buildClientEvaluation(location, formData, weatherInput) {
+function buildClientEvaluation(location, formData, weatherInput, buildingInput) {
     const weather = {
         ...createFallbackWeather(),
         ...(weatherInput || {}),
         source: weatherInput?.source || 'browser_fallback'
     }
+    const buildingSourceChain = combineSourceChains(
+        buildingInput?.building_source_chain,
+        buildingInput?.building_source,
+        buildingInput?.building_profile_source
+    )
+    const buildingSource = buildingInput?.building_source || 'browser_fallback'
+    const buildingProfileSource = buildingInput?.building_profile_source || 'surface_only'
+    const buildingConfidence = Number.isFinite(Number(buildingInput?.building_confidence))
+        ? Number(buildingInput.building_confidence)
+        : Number.isFinite(Number(buildingInput?.confidence))
+            ? Number(buildingInput.confidence)
+            : 0.72
 
     const spec = DRONE_SPECS[formData.drone_model] || DRONE_SPECS['DJI Mavic 3']
     const buildingHeight = Math.max(0, toNumber(formData.building_height, 25))
     const streetWidth = Math.max(1, toNumber(formData.street_width, 15))
     const missionAltitude = Math.max(5, toNumber(formData.mission_altitude, 30))
     const hwRatio = buildingHeight / streetWidth
-    const fcanyon = 1 + 0.3 * Math.min(hwRatio, 3)
+    const fcanyonRaw = 1 + 0.3 * Math.min(hwRatio, 3)
+    const sourceQuality = buildingSourceChain.some(item => item.includes('vworld_wfs'))
+        ? 1
+        : buildingSourceChain.some(item => item.includes('footprint_cache'))
+            ? 0.92
+            : buildingSourceChain.some(item => item.includes('osm_fallback'))
+                ? 0.75
+                : buildingSourceChain.some(item => item.includes('coordinate_based') || item.includes('building_height_heuristic'))
+                    ? 0.65
+                    : buildingSourceChain.some(item => item.includes('browser_synthetic') || item.includes('browser_fallback') || item.includes('client_fallback'))
+                        ? 0.5
+                        : 0.65
+    const buildingWeight = 0.35 + 0.65 * Math.max(0, Math.min(1, buildingConfidence)) * sourceQuality
+    const fcanyon = 1 + (fcanyonRaw - 1) * buildingWeight
     const alignFactor = { 일치: 1.3, 직각: 0.9, 불명: 1.1 }[formData.wind_alignment] || 1
     const windSpeed = Math.max(0, toNumber(weather.wind_speed, 5))
     const gustSpeed = Math.max(0, toNumber(weather.gust_speed, 8))
@@ -181,6 +280,12 @@ function buildClientEvaluation(location, formData, weatherInput) {
             W: streetWidth,
             H_W_ratio: Number(hwRatio.toFixed(2)),
             Fcanyon: Number(fcanyon.toFixed(2)),
+            Fcanyon_raw: Number(fcanyonRaw.toFixed(2)),
+            building_canyon_weight: Number(buildingWeight.toFixed(3)),
+            building_source: buildingSource,
+            building_profile_source: buildingProfileSource,
+            building_source_chain: buildingSourceChain,
+            building_confidence: Number(buildingConfidence.toFixed(2)),
             alignment_factor: alignFactor,
             mission_altitude: missionAltitude
         },
@@ -189,6 +294,12 @@ function buildClientEvaluation(location, formData, weatherInput) {
         ews: Number(ews.toFixed(2)),
         drone_spec: spec,
         source: 'client_fallback',
+        source_chain: combineSourceChains(weather.source_chain, buildingSourceChain),
+        weather_source_chain: normalizeSourceChain(weather.source_chain),
+        building_source: buildingSource,
+        building_profile_source: buildingProfileSource,
+        building_source_chain: buildingSourceChain,
+        building_confidence: Number(buildingConfidence.toFixed(2)),
         profile_source: 'browser_synthetic',
         selected_layer: profileLayers.find(layer => layer.height_m === Math.round(missionAltitude / 5) * 5) || profileLayers[0],
         profile_layers: profileLayers,
@@ -312,16 +423,28 @@ function App() {
         setBuildingLoading(true)
 
         try {
-            const data = await fetchJson(
-                apiBaseUrl,
-                `/api/building-height?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`
-            )
+            const [heightResult, footprintResult] = await Promise.allSettled([
+                fetchJson(
+                    apiBaseUrl,
+                    `/api/building-height?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`
+                ),
+                fetchJson(
+                    apiBaseUrl,
+                    `/api/building-footprint?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`
+                )
+            ])
 
-            setBuildingInfo(data)
-            if (Number.isFinite(Number(data.estimated_height_m))) {
+            const heightData = heightResult.status === 'fulfilled' ? heightResult.value : null
+            const footprintData = footprintResult.status === 'fulfilled' ? footprintResult.value : null
+            const mergedBuilding = (heightData || footprintData)
+                ? buildBuildingProvenance(heightData, footprintData)
+                : null
+
+            setBuildingInfo(mergedBuilding)
+            if (Number.isFinite(Number(mergedBuilding?.estimated_height_m))) {
                 setFormData(prev => ({
                     ...prev,
-                    building_height: data.estimated_height_m
+                    building_height: mergedBuilding.estimated_height_m
                 }))
             }
         } catch {
@@ -342,7 +465,15 @@ function App() {
                 body: JSON.stringify({
                     latitude: location.lat,
                     longitude: location.lon,
-                    ...formData
+                    ...formData,
+                    building_source: buildingInfo?.building_source || buildingInfo?.source || null,
+                    building_profile_source: buildingInfo?.building_profile_source || buildingInfo?.profile_source || null,
+                    building_source_chain: normalizeSourceChain(buildingInfo?.building_source_chain || buildingInfo?.source_chain),
+                    building_confidence: Number.isFinite(Number(buildingInfo?.building_confidence))
+                        ? Number(buildingInfo.building_confidence)
+                        : Number.isFinite(Number(buildingInfo?.confidence))
+                            ? Number(buildingInfo.confidence)
+                            : null
                 })
             })
 
@@ -352,7 +483,7 @@ function App() {
                 message: '실시간 API 연결됨'
             })
         } catch (err) {
-            const fallbackEvaluation = buildClientEvaluation(location, formData, weather)
+            const fallbackEvaluation = buildClientEvaluation(location, formData, weather, buildingInfo)
             setEvaluation(fallbackEvaluation)
             setError(null)
             setApiHealth({
@@ -482,9 +613,14 @@ function App() {
                             <div className="map-info">
                                 <span>📍 {location.lat.toFixed(4)}, {location.lon.toFixed(4)}</span>
                                 {buildingInfo && (
-                                    <span className="building-badge">
-                                        🏢 {buildingInfo.zoning_type} · {buildingInfo.estimated_floors}층 예측
-                                    </span>
+                                    <>
+                                        <span className="building-badge">
+                                            🏢 {buildingInfo.zoning_type} · {buildingInfo.estimated_floors}층 예측
+                                        </span>
+                                        <span className="building-badge">
+                                            🛰️ {buildingInfo.building_source || buildingInfo.source} · 신뢰도 {formatNumber(buildingInfo.building_confidence ?? buildingInfo.confidence, 2)}
+                                        </span>
+                                    </>
                                 )}
                             </div>
                         </div>
@@ -628,32 +764,38 @@ function App() {
                                 {weather?.source && <span>{weather.source}</span>}
                             </div>
                             {weather ? (
-                                <div className="weather-grid">
-                                    <div className="weather-item">
-                                        <span className="label">풍속</span>
-                                        <span className="value">{formatNumber(weather.wind_speed)} m/s</span>
+                                <>
+                                    <div className="weather-grid">
+                                        <div className="weather-item">
+                                            <span className="label">풍속</span>
+                                            <span className="value">{formatNumber(weather.wind_speed)} m/s</span>
+                                        </div>
+                                        <div className="weather-item">
+                                            <span className="label">돌풍</span>
+                                            <span className="value">{formatNumber(weather.gust_speed)} m/s</span>
+                                        </div>
+                                        <div className="weather-item">
+                                            <span className="label">시정</span>
+                                            <span className="value">{formatNumber(weather.visibility)} km</span>
+                                        </div>
+                                        <div className="weather-item">
+                                            <span className="label">강수</span>
+                                            <span className="value">{formatNumber(weather.precipitation_prob, 0)}%</span>
+                                        </div>
+                                        <div className="weather-item">
+                                            <span className="label">Kp</span>
+                                            <span className="value">{formatNumber(weather.kp_index, 1)}</span>
+                                        </div>
+                                        <div className="weather-item">
+                                            <span className="label">기온</span>
+                                            <span className="value">{formatNumber(weather.temperature, 0)}°C</span>
+                                        </div>
                                     </div>
-                                    <div className="weather-item">
-                                        <span className="label">돌풍</span>
-                                        <span className="value">{formatNumber(weather.gust_speed)} m/s</span>
+                                    <div className="source-details">
+                                        <p><strong>소스 체인:</strong> {formatSourceChain(weather.source_chain)}</p>
+                                        <p><strong>프로파일:</strong> {weather.profile_source || 'surface_only'}</p>
                                     </div>
-                                    <div className="weather-item">
-                                        <span className="label">시정</span>
-                                        <span className="value">{formatNumber(weather.visibility)} km</span>
-                                    </div>
-                                    <div className="weather-item">
-                                        <span className="label">강수</span>
-                                        <span className="value">{formatNumber(weather.precipitation_prob, 0)}%</span>
-                                    </div>
-                                    <div className="weather-item">
-                                        <span className="label">Kp</span>
-                                        <span className="value">{formatNumber(weather.kp_index, 1)}</span>
-                                    </div>
-                                    <div className="weather-item">
-                                        <span className="label">기온</span>
-                                        <span className="value">{formatNumber(weather.temperature, 0)}°C</span>
-                                    </div>
-                                </div>
+                                </>
                             ) : (
                                 <p className="empty-state">기상 정보 로딩 중...</p>
                             )}
@@ -697,8 +839,14 @@ function App() {
                                     <div className="ews-info">
                                         <p><strong>EWS:</strong> {formatNumber(evaluation.ews)} m/s</p>
                                         <p><strong>Fcanyon:</strong> {formatNumber(urbanFactors.Fcanyon, 2)}</p>
+                                        <p><strong>Fcanyon raw:</strong> {formatNumber(urbanFactors.Fcanyon_raw, 2)}</p>
+                                        <p><strong>건물 가중치:</strong> {formatNumber(urbanFactors.building_canyon_weight, 3)}</p>
                                         <p><strong>H/W 비율:</strong> {formatNumber(evaluationHwRatio, 2)}</p>
                                         <p><strong>프로파일:</strong> {evaluation.profile_source || 'surface_only'}</p>
+                                        <p><strong>건물 소스:</strong> {evaluation.building_source || urbanFactors.building_source || '-'}</p>
+                                        <p><strong>기상 체인:</strong> {formatSourceChain(evaluation.weather_source_chain || evaluation.weather?.source_chain)}</p>
+                                        <p><strong>건물 체인:</strong> {formatSourceChain(evaluation.building_source_chain || urbanFactors.building_source_chain)}</p>
+                                        <p><strong>건물 신뢰도:</strong> {formatNumber(evaluation.building_confidence ?? urbanFactors.building_confidence, 2)}</p>
                                     </div>
                                 </div>
 

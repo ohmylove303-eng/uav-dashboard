@@ -11,6 +11,26 @@ const DRONE_TYPES = [
     'Custom (Generic)'
 ]
 
+function normalizeSourceChain(sourceChain) {
+    if (Array.isArray(sourceChain)) {
+        return sourceChain.map(item => String(item).trim()).filter(Boolean)
+    }
+
+    if (typeof sourceChain === 'string' && sourceChain.trim()) {
+        return sourceChain
+            .split(' + ')
+            .map(item => item.trim())
+            .filter(Boolean)
+    }
+
+    return []
+}
+
+function formatSourceChain(sourceChain) {
+    const normalized = normalizeSourceChain(sourceChain)
+    return normalized.length ? normalized.join(' · ') : '-'
+}
+
 function CorridorSimulation({ apiBaseUrl = '' }) {
     // 출발/도착 위치
     const [pointA, setPointA] = useState(null)
@@ -85,12 +105,17 @@ function CorridorSimulation({ apiBaseUrl = '' }) {
             Math.sin((pointA.lat + pointA.lon + pointB.lat + pointB.lon + settings.altitude) * 1000)
         )
         const segments = []
+        const weatherSourceChain = ['browser_fallback', 'surface_only']
 
         for (let i = 0; i < settings.segmentCount; i++) {
             const riskLevel = (Math.sin((i + 1) * 12.9898 + routeSeed * 78.233) + 1) / 2
             let status = 'GO'
             if (riskLevel > 0.7) status = 'NO-GO'
             else if (riskLevel > 0.4) status = 'RESTRICT'
+            const buildingConfidence = Number((0.45 + (1 - riskLevel) * 0.4).toFixed(2))
+            const buildingSourceChain = riskLevel > 0.65
+                ? ['browser_fallback', 'coordinate_based']
+                : ['browser_fallback', 'surface_only']
 
             segments.push({
                 id: i + 1,
@@ -99,6 +124,17 @@ function CorridorSimulation({ apiBaseUrl = '' }) {
                 status,
                 wind_speed: (riskLevel * 8 + 2).toFixed(1),
                 building_height: Math.floor(riskLevel * 30 + 10),
+                building_floors: Math.max(1, Math.round((riskLevel * 30 + 10) / 3.3)),
+                building_confidence: buildingConfidence,
+                building_source: 'browser_fallback',
+                building_profile_source: 'browser_synthetic',
+                building_source_chain: buildingSourceChain,
+                building_canyon_weight: Number((0.35 + 0.65 * buildingConfidence * 0.5).toFixed(3)),
+                fcanyon_raw: Number((1 + 0.3 * Math.min(Math.floor(riskLevel * 30 + 10) / 12, 3)).toFixed(2)),
+                fcanyon_effective: Number((1 + 0.3 * Math.min(Math.floor(riskLevel * 30 + 10) / 12, 3) * (0.35 + 0.65 * buildingConfidence * 0.5)).toFixed(2)),
+                weather_source: 'browser_fallback',
+                weather_source_chain: weatherSourceChain,
+                weather_profile_source: 'surface_only',
                 reason: status === 'GO' ? '안전 통과 가능' :
                     status === 'RESTRICT' ? '주의 필요 (건물 근접)' : '비행 불가 (고층 건물)'
             })
@@ -118,7 +154,12 @@ function CorridorSimulation({ apiBaseUrl = '' }) {
             overall_judgment: overall,
             segments,
             recommended_altitude: settings.altitude + (overall === 'NO-GO' ? 20 : 0),
-            alternative_route: overall === 'NO-GO' ? '우회 경로 권장' : null
+            alternative_route: overall === 'NO-GO' ? '우회 경로 권장' : null,
+            weather_source: 'browser_fallback',
+            weather_source_chain: weatherSourceChain,
+            weather_profile_source: 'surface_only',
+            source_chain: weatherSourceChain,
+            stale_cache: false
         }
     }
 
@@ -261,6 +302,10 @@ function CorridorSimulation({ apiBaseUrl = '' }) {
                                     <span>⏱️ 예상 비행 시간: {analysis.flight_time_min}분</span>
                                     <span>📍 권장 고도: {analysis.recommended_altitude}m</span>
                                 </div>
+                                <div className="result-details">
+                                    <span>🌤️ 기상 체인: {formatSourceChain(analysis.weather_source_chain || analysis.weather_source)}</span>
+                                    <span>🏙️ 건물 체인: {formatSourceChain(analysis.building_source_chain || analysis.source_chain)}</span>
+                                </div>
                                 {analysis.alternative_route && (
                                     <div className="alternative-notice">
                                         ⚠️ {analysis.alternative_route}
@@ -287,6 +332,12 @@ function CorridorSimulation({ apiBaseUrl = '' }) {
                                             <div className="segment-info">
                                                 <small>💨 풍속: {seg.wind_speed}m/s</small>
                                                 <small>🏢 건물: {seg.building_height}m</small>
+                                                <small>🔎 건물 신뢰도: {seg.building_confidence}</small>
+                                                <small>🛰️ 건물 소스: {seg.building_source}</small>
+                                            </div>
+                                            <div className="segment-info">
+                                                <small>🌤️ 기상 체인: {formatSourceChain(seg.weather_source_chain || seg.weather_source)}</small>
+                                                <small>🏙️ 건물 체인: {formatSourceChain(seg.building_source_chain || seg.building_source)}</small>
                                             </div>
                                             <div className="segment-reason">{seg.reason}</div>
                                         </div>

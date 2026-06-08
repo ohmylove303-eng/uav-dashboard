@@ -148,6 +148,42 @@ def _sanitize_properties(properties: Any) -> Dict[str, Any]:
     return sanitized
 
 
+def _footprint_confidence_for_source(source: Optional[str]) -> float:
+    source = (source or "").lower()
+    if source == "vworld_wfs":
+        return 0.96
+    if source == "footprint_cache":
+        return 0.84
+    if source == "osm_fallback":
+        return 0.68
+    return 0.5
+
+
+def _annotate_footprint_result(
+    result: Dict[str, Any],
+    source_chain: Optional[Iterable[str]] = None,
+    profile_source: Optional[str] = None,
+) -> Dict[str, Any]:
+    payload = dict(result)
+    source = payload.get("source") or "vworld_wfs"
+    chain = list(source_chain) if source_chain is not None else [source]
+    cleaned_chain = []
+    seen = set()
+    for item in chain:
+        token = str(item).strip()
+        if not token or token in seen:
+            continue
+        cleaned_chain.append(token)
+        seen.add(token)
+    confidence = _footprint_confidence_for_source(source) if payload.get("available", True) else 0.0
+    payload["source_chain"] = cleaned_chain
+    payload["profile_source"] = profile_source or source
+    payload["confidence"] = confidence
+    payload["building_confidence"] = confidence
+    payload["stale_cache"] = bool(payload.get("stale_cache", False))
+    return payload
+
+
 def _request_headers() -> Dict[str, str]:
     return {
         "Accept": "application/json, application/xml, text/xml, */*",
@@ -283,12 +319,12 @@ def _store_footprint_cache_entry(
         })
 
     _write_footprint_cache(entries)
-    return {
+    return _annotate_footprint_result({
         "available": True,
         "source": "footprint_cache",
         "geometry": ring,
         "properties": _sanitize_properties(properties or {}),
-    }
+    }, source_chain=["footprint_cache"], profile_source="cache")
 
 
 def _match_cached_footprint(lat: float, lon: float, max_distance_deg: float = 0.0012) -> Optional[Dict[str, Any]]:
@@ -323,7 +359,7 @@ def _match_cached_footprint(lat: float, lon: float, max_distance_deg: float = 0.
             }
 
     if best_entry and best_distance <= max_distance_deg:
-        return best_entry
+        return _annotate_footprint_result(best_entry, source_chain=["footprint_cache"], profile_source="cache")
     return None
 
 
@@ -389,12 +425,12 @@ def _lookup_osm_fallback_sync(lat: float, lon: float, radius_m: float = 60.0) ->
         return None
 
     nearest = min(candidates, key=lambda item: _distance_to_ring(item["geometry"], lat, lon))
-    return {
+    return _annotate_footprint_result({
         "available": True,
         "source": "osm_fallback",
         "geometry": nearest["geometry"],
         "properties": nearest["properties"],
-    }
+    }, source_chain=["osm_fallback"], profile_source="fallback")
 
 
 async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
@@ -403,6 +439,18 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
 
     cached_match = _match_cached_footprint(lat, lon)
     osm_fallback = await asyncio.to_thread(_lookup_osm_fallback_sync, lat, lon)
+    if cached_match:
+        cached_match = _annotate_footprint_result(
+            cached_match,
+            source_chain=cached_match.get("source_chain") or ["footprint_cache"],
+            profile_source=cached_match.get("profile_source") or "cache",
+        )
+    if osm_fallback:
+        osm_fallback = _annotate_footprint_result(
+            osm_fallback,
+            source_chain=osm_fallback.get("source_chain") or ["osm_fallback"],
+            profile_source=osm_fallback.get("profile_source") or "fallback",
+        )
     if osm_fallback and osm_fallback.get("available"):
         try:
             _store_footprint_cache_entry(
@@ -416,11 +464,11 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
             pass
 
     if not api_key:
-        return cached_match or osm_fallback or {
+        return cached_match or osm_fallback or _annotate_footprint_result({
             "available": False,
             "source": "vworld_wfs",
             "reason": "missing_vworld_api_key",
-        }
+        }, source_chain=["vworld_wfs"], profile_source="wfs")
 
     try:
         type_name = preferred_type_name or DEFAULT_VWORLD_TYPENAME
@@ -439,11 +487,11 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
             type_name = _choose_type_name(type_names) or DEFAULT_VWORLD_TYPENAME
 
         if not type_name:
-            return {
+            return _annotate_footprint_result({
                 "available": False,
                 "source": "vworld_wfs",
                 "reason": "no_building_typename_detected",
-            }
+            }, source_chain=["vworld_wfs"], profile_source="wfs")
 
         bbox = _build_bbox(lat, lon)
         payload_text = await asyncio.to_thread(
@@ -463,13 +511,13 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
         try:
             payload = json.loads(payload_text)
         except ValueError:
-            return {
+            return _annotate_footprint_result({
                 "available": False,
                 "source": "vworld_wfs",
                 "typeName": type_name,
                 "reason": "feature_request_failed",
                 "detail": payload_text[:400],
-            }
+            }, source_chain=["vworld_wfs"], profile_source="wfs")
         features = payload.get("features") if isinstance(payload, dict) else []
         if not isinstance(features, list):
             features = []
@@ -479,30 +527,30 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
             if isinstance(feature, dict) and (_get_polygon_ring(feature) or [])
         ]
         if not polygon_features:
-            return cached_match or osm_fallback or {
+            return cached_match or osm_fallback or _annotate_footprint_result({
                 "available": False,
                 "source": "vworld_wfs",
                 "typeName": type_name,
                 "reason": "no_polygon_feature_found",
-            }
+            }, source_chain=["vworld_wfs"], profile_source="wfs")
 
         nearest = min(polygon_features, key=lambda feature: _distance_to_point(feature, lat, lon))
         geometry = _get_polygon_ring(nearest)
         if not geometry or len(geometry) < 4:
-            return cached_match or osm_fallback or {
+            return cached_match or osm_fallback or _annotate_footprint_result({
                 "available": False,
                 "source": "vworld_wfs",
                 "typeName": type_name,
                 "reason": "no_polygon_feature_found",
-            }
+            }, source_chain=["vworld_wfs"], profile_source="wfs")
 
-        result = {
+        result = _annotate_footprint_result({
             "available": True,
             "source": "vworld_wfs",
             "typeName": type_name,
             "geometry": geometry,
             "properties": _sanitize_properties(nearest.get("properties")),
-        }
+        }, source_chain=["vworld_wfs"], profile_source="wfs")
         try:
             _store_footprint_cache_entry(
                 lat,
@@ -519,19 +567,19 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
             detail = error.read().decode("utf-8", "replace")[:400]
         except Exception:
             detail = str(error)
-        return cached_match or osm_fallback or {
+        return cached_match or osm_fallback or _annotate_footprint_result({
             "available": False,
             "source": "vworld_wfs",
             "reason": "feature_request_failed",
             "detail": detail,
-        }
+        }, source_chain=["vworld_wfs"], profile_source="wfs")
     except Exception as error:
-        return cached_match or osm_fallback or {
+        return cached_match or osm_fallback or _annotate_footprint_result({
             "available": False,
             "source": "vworld_wfs",
             "reason": "unexpected_error",
             "detail": str(error),
-        }
+        }, source_chain=["vworld_wfs"], profile_source="wfs")
 
 
 def cache_building_footprint(lat: float, lon: float, geometry: Iterable[Iterable[float]], properties: Optional[Dict[str, Any]] = None, source: str = "manual_seed") -> Dict[str, Any]:

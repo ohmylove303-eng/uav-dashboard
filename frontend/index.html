@@ -7,7 +7,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>🚁 UAV 도시 운용판정</title>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+    <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
     <script src="/runtime-config.js"></script>
+    <script>
+        (function () {
+            var cfg = window.__UAV_RUNTIME_CONFIG__ || {};
+            var apiKey =
+                cfg.VITE_VWORLD_API_KEY ||
+                cfg.VITE_VWORLD_3D_API_KEY ||
+                cfg.VITE_VWORLD_KEY ||
+                cfg.NEXT_PUBLIC_VWORLD_API_KEY ||
+                cfg.VWORLD_API_KEY;
+
+            if (!apiKey) return;
+
+            document.write(
+                '<script id="vworld-3d-webgl-script" src="https://map.vworld.kr/js/webglMapInit.js.do?version=3.0&apiKey=' +
+                encodeURIComponent(apiKey) +
+                '"><\/script>'
+            );
+        })();
+    </script>
 </head>
 
 <body>

@@ -257,6 +257,15 @@ class BuildingHeightPredictor:
 
 predictor = BuildingHeightPredictor()
 
+
+def _profile_source_for_method(method: str) -> str:
+    method = (method or "").lower()
+    if method.startswith("coordinate_based"):
+        return "coordinate_based"
+    if method == "far_bcr_input":
+        return "far_bcr_input"
+    return "zoning_based"
+
 def predict_building_height(lat: float, lon: float, 
                            zoning: str = None,
                            far: float = None,
@@ -278,7 +287,12 @@ def predict_building_height(lat: float, lon: float,
         "far_percent": result.far_used,
         "bcr_percent": result.bcr_used,
         "confidence": result.confidence,
-        "method": result.method
+        "building_confidence": result.confidence,
+        "method": result.method,
+        "source": "building_height_heuristic",
+        "profile_source": _profile_source_for_method(result.method),
+        "source_chain": ["building_height_heuristic", _profile_source_for_method(result.method)],
+        "stale_cache": False
     }
 
 

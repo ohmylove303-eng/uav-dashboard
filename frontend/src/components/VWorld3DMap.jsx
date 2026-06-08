@@ -17,11 +17,13 @@ function getVWorldApiKey() {
             'VITE_VWORLD_API_KEY',
             'VITE_VWORLD_3D_API_KEY',
             'VITE_VWORLD_KEY',
+            'NEXT_PUBLIC_VWORLD_API_KEY',
             'VWORLD_API_KEY'
         ) ||
         env.VITE_VWORLD_3D_API_KEY ||
         env.VITE_VWORLD_API_KEY ||
         env.VITE_VWORLD_KEY ||
+        env.NEXT_PUBLIC_VWORLD_API_KEY ||
         ''
     ).trim()
 }
@@ -51,7 +53,9 @@ function loadVWorld3DScript() {
     }
 
     scriptPromise = new Promise((resolve, reject) => {
-        const existingScript = document.getElementById(SCRIPT_ID)
+        const existingScript =
+            document.getElementById(SCRIPT_ID) ||
+            document.querySelector('script[src*="webglMapInit.js.do"]')
 
         if (existingScript) {
             if (existingScript.dataset.loaded === 'true') {

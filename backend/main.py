@@ -50,6 +50,7 @@ CLIENT_RUNTIME_ENV_KEYS = (
     "VITE_VWORLD_API_KEY",
     "VITE_VWORLD_3D_API_KEY",
     "VITE_VWORLD_KEY",
+    "NEXT_PUBLIC_VWORLD_API_KEY",
     "VWORLD_API_KEY",
 )
 
@@ -166,6 +167,12 @@ class EvaluationRequest(BaseModel):
     temperature: Optional[float] = None
     humidity: Optional[float] = None
 
+    # 건물 provenance (선택)
+    building_source: Optional[str] = Field(None, description="건물 데이터 소스")
+    building_profile_source: Optional[str] = Field(None, description="건물 프로파일 소스")
+    building_source_chain: Optional[List[str]] = Field(None, description="건물 소스 체인")
+    building_confidence: Optional[float] = Field(None, description="건물 신뢰도 (0-1)")
+
 
 class FootprintCacheRequest(BaseModel):
     lat: float
@@ -185,6 +192,13 @@ class EvaluationResponse(BaseModel):
     drone_spec: Dict
     source: Optional[str] = None
     profile_source: Optional[str] = None
+    source_chain: Optional[List[str]] = None
+    weather_source_chain: Optional[List[str]] = None
+    building_source: Optional[str] = None
+    building_profile_source: Optional[str] = None
+    building_source_chain: Optional[List[str]] = None
+    building_confidence: Optional[float] = None
+    stale_cache: Optional[bool] = None
     upper_air_profile: Optional[Dict] = None
     wind_profiler_profile: Optional[Dict] = None
     selected_layer: Optional[Dict] = None
@@ -256,6 +270,114 @@ def _mark_source_suffix(payload: Optional[Dict[str, Any]], suffix: str, fallback
     return marked
 
 
+def _normalize_source_chain(*parts: Any) -> List[str]:
+    chain: List[str] = []
+    seen = set()
+    for part in parts:
+        if part is None:
+            continue
+        values = part if isinstance(part, (list, tuple, set)) else [part]
+        for value in values:
+            token = str(value).strip()
+            if not token or token in seen:
+                continue
+            chain.append(token)
+            seen.add(token)
+    return chain
+
+
+def _parse_source_chain(source: Optional[str]) -> List[str]:
+    if not source:
+        return []
+    tokens = []
+    for part in str(source).split(" + "):
+        token = part.strip()
+        if not token or token.startswith("stale_"):
+            continue
+        tokens.append(token)
+    return _normalize_source_chain(tokens)
+
+
+def _chain_to_source(chain: Optional[List[str]]) -> Optional[str]:
+    normalized = _normalize_source_chain(chain or [])
+    return " + ".join(normalized) if normalized else None
+
+
+def _clamp(value: Optional[float], minimum: float = 0.0, maximum: float = 1.0) -> float:
+    if value is None:
+        return minimum
+    return max(minimum, min(maximum, float(value)))
+
+
+def _weather_profile_source(upper_air: Optional[Dict[str, Any]], wind_profiler: Optional[Dict[str, Any]]) -> str:
+    if upper_air and wind_profiler:
+        return "kma_radiosonde_wind_profiler"
+    if upper_air:
+        return "kma_radiosonde"
+    if wind_profiler:
+        return "kma_wind_profiler"
+    return "surface_only"
+
+
+def _attach_weather_provenance(
+    weather: Dict[str, Any],
+    upper_air: Optional[Dict[str, Any]] = None,
+    wind_profiler: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    payload = dict(weather)
+    source_chain = _parse_source_chain(payload.get("source"))
+    if not source_chain:
+        source = str(payload.get("source") or "")
+        if source.startswith("surface_fallback"):
+            source_chain = ["surface_fallback"]
+        elif source:
+            source_chain = [source]
+        else:
+            source_chain = ["open_meteo_surface"]
+
+    if upper_air and "kma_radiosonde" not in source_chain:
+        source_chain.append("kma_radiosonde")
+    if wind_profiler and "kma_wind_profiler" not in source_chain:
+        source_chain.append("kma_wind_profiler")
+
+    payload["source_chain"] = _normalize_source_chain(source_chain)
+    payload["profile_source"] = _weather_profile_source(upper_air, wind_profiler)
+    payload["stale_cache"] = bool(payload.get("stale_cache", False))
+    return payload
+
+
+def _building_source_quality(
+    building_source: Optional[str],
+    building_source_chain: Optional[List[str]] = None,
+) -> float:
+    tokens = [token.lower() for token in _normalize_source_chain(building_source_chain or [], building_source or "")]
+    if any("vworld_wfs" in token for token in tokens):
+        return 1.0
+    if any("footprint_cache" in token for token in tokens):
+        return 0.92
+    if any("osm_fallback" in token for token in tokens):
+        return 0.75
+    if any("coordinate_based" in token or "building_height_heuristic" in token for token in tokens):
+        return 0.65
+    if any("browser_synthetic" in token or "client_fallback" in token for token in tokens):
+        return 0.5
+    if any("manual" in token for token in tokens):
+        return 0.7
+    if any("vworld" in token for token in tokens):
+        return 0.85
+    return 0.65
+
+
+def _resolve_building_canyon_weight(
+    building_confidence: Optional[float],
+    building_source: Optional[str],
+    building_source_chain: Optional[List[str]] = None,
+) -> float:
+    confidence = _clamp(building_confidence if building_confidence is not None else 0.72)
+    quality = _building_source_quality(building_source, building_source_chain)
+    return round(0.35 + 0.65 * confidence * quality, 3)
+
+
 async def fetch_kp_index_safe() -> float:
     try:
         return await asyncio.wait_for(fetch_kp_index(), timeout=KP_REQUEST_TIMEOUT_S)
@@ -270,10 +392,14 @@ async def fetch_weather_safe(lat: float, lon: float) -> Dict:
     except Exception:
         stale = _cache_get_stale(WEATHER_LAST_GOOD_CACHE, cache_key, WEATHER_STALE_TTL_S)
         if stale:
-            return _mark_source_suffix(stale, "stale_surface_cache", "open_meteo_surface")
+            return _attach_weather_provenance(
+                _mark_source_suffix(stale, "stale_surface_cache", "open_meteo_surface") or {}
+            )
         cached = _cache_get(WEATHER_CACHE, cache_key, WEATHER_CACHE_TTL_S)
         if cached:
-            return _mark_source_suffix(cached, "memory_surface_cache", "open_meteo_surface")
+            return _attach_weather_provenance(
+                _mark_source_suffix(cached, "memory_surface_cache", "open_meteo_surface") or {}
+            )
         return {
             "wind_speed": 5.0,
             "gust_speed": 8.0,
@@ -288,6 +414,8 @@ async def fetch_weather_safe(lat: float, lon: float) -> Dict:
             "sunrise": "06:00",
             "sunset": "18:00",
             "source": "surface_fallback + timeout_guard",
+            "source_chain": ["surface_fallback", "timeout_guard"],
+            "profile_source": "surface_only",
             "stale_cache": False
         }
 
@@ -352,7 +480,7 @@ async def fetch_weather(lat: float, lon: float) -> Dict:
     cache_key = f"{_round_coord(lat)},{_round_coord(lon)}"
     cached = _cache_get(WEATHER_CACHE, cache_key, WEATHER_CACHE_TTL_S)
     if cached:
-        return dict(cached)
+        return _attach_weather_provenance(dict(cached))
 
     url = "https://api.open-meteo.com/v1/forecast"
     # UAV Forecast급 상세 데이터 요청
@@ -388,23 +516,25 @@ async def fetch_weather(lat: float, lon: float) -> Dict:
                     "sunrise": sunrise,
                     "sunset": sunset,
                     "source": "open_meteo_surface",
+                    "source_chain": ["open_meteo_surface"],
+                    "profile_source": "surface_only",
                     "stale_cache": False
                 }
                 _cache_set(WEATHER_LAST_GOOD_CACHE, cache_key, result)
-                return _cache_set(WEATHER_CACHE, cache_key, result)
+                return _attach_weather_provenance(_cache_set(WEATHER_CACHE, cache_key, result))
     except Exception as e:
         print(f"Weather Fetch Error: {e}")
         stale = _cache_get_stale(WEATHER_LAST_GOOD_CACHE, cache_key, WEATHER_STALE_TTL_S)
         if stale:
             stale_result = dict(_mark_stale_payload(stale))
             stale_result["source"] = f'{stale_result.get("source", "open_meteo_surface")} + stale_cache'
-            return stale_result
+            return _attach_weather_provenance(stale_result)
 
     stale = _cache_get_stale(WEATHER_LAST_GOOD_CACHE, cache_key, WEATHER_STALE_TTL_S)
     if stale:
         stale_result = dict(_mark_stale_payload(stale))
         stale_result["source"] = f'{stale_result.get("source", "open_meteo_surface")} + stale_cache'
-        return stale_result
+        return _attach_weather_provenance(stale_result)
 
     fallback = {
         "wind_speed": 5.0, "gust_speed": 8.0, "wind_direction": 0,
@@ -412,9 +542,11 @@ async def fetch_weather(lat: float, lon: float) -> Dict:
         "dew_point": 15, "humidity": 50, "cloud_cover": 20,
         "weather_code": 0, "sunrise": "06:00", "sunset": "18:00",
         "source": "surface_fallback",
+        "source_chain": ["surface_fallback"],
+        "profile_source": "surface_only",
         "stale_cache": False
     }
-    return _cache_set(WEATHER_CACHE, cache_key, fallback)
+    return _attach_weather_provenance(_cache_set(WEATHER_CACHE, cache_key, fallback))
 
 def nearest_kma_station(lat: float, lon: float) -> Dict:
     def station_dist(station: Dict) -> float:
@@ -858,13 +990,36 @@ def worst_judgment(statuses: List[JudgmentLevel]) -> JudgmentLevel:
     return JudgmentLevel.GO
 
 
-def estimate_route_building_height(lat: float, lon: float) -> float:
+def estimate_route_building_height(lat: float, lon: float, with_metadata: bool = False):
     try:
         from building_height import predict_building_height
         result = predict_building_height(lat, lon)
-        return float(result.get("estimated_height_m", 25.0))
+        height = float(result.get("estimated_height_m", 25.0))
+        if with_metadata:
+            source_chain = _normalize_source_chain(result.get("source_chain") or [result.get("source") or "building_height_heuristic"])
+            return {
+                "height_m": height,
+                "estimated_floors": int(result.get("estimated_floors", 0) or 0),
+                "confidence": _clamp(result.get("building_confidence", result.get("confidence", 0.6)), 0.0, 1.0),
+                "source": result.get("source", "building_height_heuristic"),
+                "profile_source": result.get("profile_source", "coordinate_based"),
+                "source_chain": source_chain,
+                "method": result.get("method"),
+            }
+        return height
     except Exception:
-        return round(18.0 + abs(math.sin(lat * 41.7 + lon * 17.3)) * 35.0, 1)
+        fallback_height = round(18.0 + abs(math.sin(lat * 41.7 + lon * 17.3)) * 35.0, 1)
+        if with_metadata:
+            return {
+                "height_m": fallback_height,
+                "estimated_floors": max(1, int(round(fallback_height / 3.3))),
+                "confidence": 0.45,
+                "source": "building_height_fallback",
+                "profile_source": "coordinate_based",
+                "source_chain": ["building_height_fallback"],
+                "method": "heuristic_fallback",
+            }
+        return fallback_height
 
 
 # ============================================
@@ -934,6 +1089,7 @@ async def get_weather_api(lat: float = 37.5665, lon: float = 126.9780):
         w["source"] = "kma_wind_profiler + open_meteo_surface"
     if source_suffixes:
         w["source"] = f'{w.get("source", "open_meteo_surface")} + {", ".join(source_suffixes)}'
+    w = _attach_weather_provenance(w, upper_air, wind_profiler)
     return {"weather": w}
 
 @app.post("/api/evaluate", response_model=EvaluationResponse)
@@ -949,7 +1105,15 @@ async def evaluate_flight(request: EvaluationRequest):
             "weather_code": 0,
             "temperature": request.temperature or 20,
             "humidity": request.humidity or 50,
-            "dew_point": 15, "cloud_cover": 20, "wind_direction": 0, "sunrise": "06:00", "sunset": "18:00"
+            "dew_point": 15,
+            "cloud_cover": 20,
+            "wind_direction": 0,
+            "sunrise": "06:00",
+            "sunset": "18:00",
+            "source": "manual_surface_input",
+            "source_chain": ["manual_surface_input"],
+            "profile_source": "surface_only",
+            "stale_cache": False
         }
         kp = request.kp_index or 3.0
     else:
@@ -962,7 +1126,6 @@ async def evaluate_flight(request: EvaluationRequest):
         fetch_kma_wind_profiler_profile_safe(request.latitude, request.longitude)
     )
     selected_layer = None
-    profile_source = "surface_only"
     wind_profiler_layer = None
     source_suffixes = []
     if weather.get("stale_cache"):
@@ -981,7 +1144,6 @@ async def evaluate_flight(request: EvaluationRequest):
                 selected_layer["temperature_c"]
             )
             weather["source"] = "kma_radiosonde + open_meteo_surface"
-            profile_source = "kma_radiosonde"
             if upper_air.get("stale_cache"):
                 source_suffixes.append("stale_upper_air_cache")
 
@@ -1015,28 +1177,59 @@ async def evaluate_flight(request: EvaluationRequest):
                 if upper_air else
                 "kma_wind_profiler + open_meteo_surface"
             )
-            profile_source = "kma_radiosonde_wind_profiler" if upper_air else "kma_wind_profiler"
             if wind_profiler.get("stale_cache"):
                 source_suffixes.append("stale_wind_profiler_cache")
 
     if source_suffixes:
         weather["source"] = f'{weather.get("source", "open_meteo_surface")} + {", ".join(source_suffixes)}'
+    weather = _attach_weather_provenance(weather, upper_air, wind_profiler)
+    profile_source = weather.get("profile_source", "surface_only")
 
     # 2. Drone Specs
     spec = DRONE_SPECS[request.drone_model]
     
     # 3. Urban Factors
     align_factor = {"일치": 1.3, "직각": 0.9, "불명": 1.1}.get(request.wind_alignment, 1.0)
-    fcanyon = calculate_fcanyon(request.building_height, request.street_width)
+    building_source_chain = _normalize_source_chain(
+        request.building_source_chain or [],
+        request.building_source or "manual_input",
+        request.building_profile_source or None,
+    )
+    if not building_source_chain:
+        building_source_chain = ["manual_input"]
+    building_source = request.building_source or building_source_chain[0]
+    building_profile_source = request.building_profile_source or "manual_input"
+    building_confidence = _clamp(request.building_confidence if request.building_confidence is not None else 0.72)
+    building_canyon_weight = _resolve_building_canyon_weight(
+        building_confidence,
+        building_source,
+        building_source_chain,
+    )
+    fcanyon_raw = calculate_fcanyon(request.building_height, request.street_width)
+    fcanyon = 1 + (fcanyon_raw - 1) * building_canyon_weight
     ews = calculate_ews(weather["wind_speed"], fcanyon, align_factor)
     hw_ratio = request.building_height / request.street_width if request.street_width > 0 else 1.0
     
     urban_factors = {
         "H": request.building_height, "W": request.street_width,
         "H_W_ratio": round(hw_ratio, 2),
-        "Fcanyon": round(fcanyon, 2), "alignment_factor": align_factor,
+        "Fcanyon": round(fcanyon, 2),
+        "Fcanyon_raw": round(fcanyon_raw, 2),
+        "building_canyon_weight": round(building_canyon_weight, 3),
+        "building_source": building_source,
+        "building_profile_source": building_profile_source,
+        "building_source_chain": building_source_chain,
+        "building_confidence": round(building_confidence, 2),
+        "alignment_factor": align_factor,
         "mission_altitude": request.mission_altitude
     }
+    weather_source_chain = weather.get("source_chain", [])
+    evaluation_source_chain = _normalize_source_chain(weather_source_chain, building_source_chain)
+    stale_cache = bool(
+        weather.get("stale_cache")
+        or (upper_air and upper_air.get("stale_cache"))
+        or (wind_profiler and wind_profiler.get("stale_cache"))
+    )
     
     # 4. Gate Judgments
     g0 = evaluate_gate0(request, weather)
@@ -1067,6 +1260,12 @@ async def evaluate_flight(request: EvaluationRequest):
         final_judgment=final, ews=round(ews, 2), drone_spec=spec,
         source="backend",
         profile_source=profile_source,
+        source_chain=evaluation_source_chain,
+        weather_source_chain=weather_source_chain,
+        building_source=building_source,
+        building_profile_source=building_profile_source,
+        building_source_chain=building_source_chain,
+        building_confidence=round(building_confidence, 2),
         upper_air_profile={
             "station_id": upper_air["station_id"],
             "station_name": upper_air["station_name"],
@@ -1091,7 +1290,8 @@ async def evaluate_flight(request: EvaluationRequest):
             "wind_speed_mps": round(selected_layer["wind_speed_mps"], 2),
             "density": weather.get("upper_air_density")
         } if selected_layer else None,
-        profile_layers=profile_layers
+        profile_layers=profile_layers,
+        stale_cache=stale_cache
     )
 
 
@@ -1102,6 +1302,7 @@ async def analyze_corridor(request: CorridorAnalysisRequest):
     midpoint = interpolate_route_point(request.point_a, request.point_b, 0.5)
     weather = await fetch_weather_safe(midpoint["lat"], midpoint["lon"])
     spec = resolve_drone_spec(request.drone_type)
+    weather_source_chain = weather.get("source_chain", [])
     segments = []
 
     for idx in range(segment_count):
@@ -1109,10 +1310,20 @@ async def analyze_corridor(request: CorridorAnalysisRequest):
         end_ratio = (idx + 1) / segment_count
         mid_ratio = (start_ratio + end_ratio) / 2
         point = interpolate_route_point(request.point_a, request.point_b, mid_ratio)
-        building_height = estimate_route_building_height(point["lat"], point["lon"])
+        building = estimate_route_building_height(point["lat"], point["lon"], with_metadata=True)
+        building_height = float(building["height_m"])
         street_width = 12.0 + abs(math.cos(point["lat"] * 29.0 + point["lon"] * 13.0)) * 14.0
-        fcanyon = calculate_fcanyon(building_height, street_width)
-        ews = calculate_ews(weather["wind_speed"], fcanyon, 1.1)
+        building_confidence = _clamp(building.get("confidence", 0.45))
+        building_source = building.get("source", "building_height_heuristic")
+        building_source_chain = _normalize_source_chain(building.get("source_chain") or [building_source])
+        building_canyon_weight = _resolve_building_canyon_weight(
+            building_confidence,
+            building_source,
+            building_source_chain,
+        )
+        fcanyon_raw = calculate_fcanyon(building_height, street_width)
+        fcanyon_effective = 1 + (fcanyon_raw - 1) * building_canyon_weight
+        ews = calculate_ews(weather["wind_speed"], fcanyon_effective, 1.1)
         wind_gate = evaluate_gate3(ews, spec)
         gust_gate = evaluate_gate4(weather["gust_speed"], spec)
 
@@ -1148,7 +1359,18 @@ async def analyze_corridor(request: CorridorAnalysisRequest):
             "wind_speed": round(weather["wind_speed"], 1),
             "ews": round(ews, 1),
             "building_height": round(building_height, 1),
+            "building_floors": building.get("estimated_floors"),
+            "building_confidence": round(building_confidence, 2),
+            "building_source": building_source,
+            "building_profile_source": building.get("profile_source"),
+            "building_source_chain": building_source_chain,
+            "building_canyon_weight": round(building_canyon_weight, 3),
+            "fcanyon_raw": round(fcanyon_raw, 2),
+            "fcanyon_effective": round(fcanyon_effective, 2),
             "street_width": round(street_width, 1),
+            "weather_source": weather.get("source", "unknown"),
+            "weather_source_chain": weather_source_chain,
+            "weather_profile_source": weather.get("profile_source"),
             "reason": " / ".join(reasons) if reasons else "안전 통과 가능"
         })
 
@@ -1159,6 +1381,11 @@ async def analyze_corridor(request: CorridorAnalysisRequest):
         recommended_altitude = max(request.altitude + 20, max_building_height + 15)
     elif overall == JudgmentLevel.RESTRICT:
         recommended_altitude = max(request.altitude, max_building_height + 10)
+    building_source_chain = _normalize_source_chain(*(segment["building_source_chain"] for segment in segments))
+    building_confidence = round(
+        sum(float(segment.get("building_confidence", 0.0)) for segment in segments) / len(segments),
+        2
+    )
 
     return {
         "distance_m": round(total_distance),
@@ -1168,6 +1395,13 @@ async def analyze_corridor(request: CorridorAnalysisRequest):
         "recommended_altitude": round(recommended_altitude, 1),
         "alternative_route": "고층/강풍 구간 우회 권장" if overall == JudgmentLevel.NO_GO else None,
         "weather_source": weather.get("source", "unknown"),
+        "weather_source_chain": weather_source_chain,
+        "weather_profile_source": weather.get("profile_source"),
+        "building_source": "building_height_heuristic",
+        "building_source_chain": building_source_chain,
+        "building_confidence": building_confidence,
+        "source_chain": _normalize_source_chain(weather_source_chain, building_source_chain),
+        "stale_cache": bool(weather.get("stale_cache")),
         "drone_spec": spec
     }
 
