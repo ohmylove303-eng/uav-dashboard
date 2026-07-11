@@ -3,9 +3,13 @@
 용적률(FAR) + 건폐율(BCR) + 용도지역 기반
 """
 
-from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
 from enum import Enum
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Tuple
+
+
+SOURCE_STATUS_ESTIMATED = "estimated"
+SOURCE_STATUS_UNAVAILABLE = "unavailable"
 
 
 class ZoningType(str, Enum):
@@ -266,6 +270,14 @@ def _profile_source_for_method(method: str) -> str:
         return "far_bcr_input"
     return "zoning_based"
 
+
+def _build_field_source(source: str, status: str, value: Any) -> Dict[str, Any]:
+    return {
+        "source": source,
+        "status": status,
+        "value": value,
+    }
+
 def predict_building_height(lat: float, lon: float, 
                            zoning: str = None,
                            far: float = None,
@@ -278,7 +290,16 @@ def predict_building_height(lat: float, lon: float,
         result = predictor.predict_by_zoning(zoning)
     else:
         result = predictor.predict_from_coordinates(lat, lon)
-    
+    profile_source = _profile_source_for_method(result.method)
+    source_status = SOURCE_STATUS_ESTIMATED if result.estimated_height > 0 else SOURCE_STATUS_UNAVAILABLE
+    field_sources = {
+        "estimated_height_m": _build_field_source("building_height_heuristic", source_status, result.estimated_height),
+        "estimated_floors": _build_field_source("building_height_heuristic", source_status, result.estimated_floors),
+        "zoning_type": _build_field_source(profile_source, source_status, result.zoning_type),
+        "far_percent": _build_field_source(profile_source, source_status, result.far_used),
+        "bcr_percent": _build_field_source(profile_source, source_status, result.bcr_used),
+    }
+
     return {
         "estimated_height_m": result.estimated_height,
         "estimated_floors": result.estimated_floors,
@@ -290,9 +311,13 @@ def predict_building_height(lat: float, lon: float,
         "building_confidence": result.confidence,
         "method": result.method,
         "source": "building_height_heuristic",
-        "profile_source": _profile_source_for_method(result.method),
-        "source_chain": ["building_height_heuristic", _profile_source_for_method(result.method)],
-        "stale_cache": False
+        "profile_source": profile_source,
+        "source_chain": ["building_height_heuristic", profile_source],
+        "source_status": source_status,
+        "official_building_data": False,
+        "official_footprint_available": False,
+        "field_sources": field_sources,
+        "stale_cache": False,
     }
 
 

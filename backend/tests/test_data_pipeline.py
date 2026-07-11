@@ -103,8 +103,15 @@ class DataPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.building_profile_source, "coordinate_based")
         self.assertCountEqual(response.building_source_chain, ["osm_fallback", "coordinate_based"])
         self.assertAlmostEqual(response.building_confidence, 0.42, places=2)
-        self.assertLess(response.urban_factors["Fcanyon"], response.urban_factors["Fcanyon_raw"])
-        self.assertLess(response.urban_factors["building_canyon_weight"], 1.0)
+        self.assertEqual(response.final_judgment, main.JudgmentLevel.HOLD)
+        self.assertEqual(response.input_quality["status"], "hold")
+        self.assertCountEqual(
+            response.input_quality["missing_prerequisites"],
+            ["building", "road_width", "weather"],
+        )
+        self.assertIsNone(response.urban_factors["Fcanyon"])
+        self.assertIsNone(response.urban_factors["Fcanyon_raw"])
+        self.assertIsNone(response.urban_factors["building_canyon_weight"])
         self.assertIn("open_meteo_surface", response.source_chain)
         self.assertIn("osm_fallback", response.source_chain)
         self.assertCountEqual(response.weather["source_chain"], ["open_meteo_surface"])
@@ -167,6 +174,7 @@ class DataPipelineTests(unittest.IsolatedAsyncioTestCase):
             patch.dict(building_footprint.os.environ, {}, clear=True),
             patch.object(building_footprint, "_match_cached_footprint", return_value=None),
             patch.object(building_footprint, "_lookup_osm_fallback_sync", return_value=mock_osm),
+            patch.object(building_footprint, "_resolve_vworld_api_key", return_value=None),
         ):
             result = await building_footprint.lookup_building_footprint(37.5665, 126.9780)
 

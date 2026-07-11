@@ -81,6 +81,7 @@ async def read_root():
 # ============================================
 
 class JudgmentLevel(str, Enum):
+    HOLD = "HOLD"
     GO = "GO"
     RESTRICT = "RESTRICT"
     NO_GO = "NO-GO"
@@ -128,6 +129,36 @@ KMA_UPPER_AIR_REQUEST_TIMEOUT_S = float(os.getenv("KMA_UPPER_AIR_REQUEST_TIMEOUT
 KMA_WIND_PROFILER_REQUEST_TIMEOUT_S = float(os.getenv("KMA_WIND_PROFILER_REQUEST_TIMEOUT_S", "2.5"))
 SURFACE_WEATHER_REQUEST_TIMEOUT_S = float(os.getenv("SURFACE_WEATHER_REQUEST_TIMEOUT_S", "3.0"))
 KP_REQUEST_TIMEOUT_S = float(os.getenv("KP_REQUEST_TIMEOUT_S", "2.0"))
+VWORLD_WFS_API_ENDPOINTS = (
+    {"url": "https://api.vworld.kr/req/wfs", "mode": "api"},
+    {"url": "https://map.vworld.kr/js/wfs.do", "mode": "map"},
+)
+VWORLD_ROAD_LAYER = "lt_l_n3a0020000"
+VWORLD_ROAD_PROPERTY_KEYS = ("rvwd", "rdln", "rdnm", "ag_geom")
+VWORLD_ROAD_QUERY_RADII_M = (180, 500, 1500)
+VWORLD_REQUEST_TIMEOUT_S = float(os.getenv("VWORLD_REQUEST_TIMEOUT_S", "5.0"))
+AUTHORITATIVE_WEATHER_SOURCE_TOKENS = (
+    "kma_surface_observation",
+    "kma_surface_forecast",
+    "kma_surface_cache",
+)
+NON_AUTHORITATIVE_WEATHER_SOURCE_TOKENS = (
+    "open_meteo_surface",
+    "manual_surface_input",
+    "surface_fallback",
+    "weather_unavailable",
+)
+OFFICIAL_BUILDING_SOURCE_HINTS = ("official_verified", "vworld")
+UNVERIFIED_BUILDING_SOURCE_HINTS = (
+    "coordinate_based",
+    "osm_fallback",
+    "fallback",
+    "heuristic",
+    "manual",
+    "unverified",
+    "client",
+    "browser",
+)
 
 class GateResult(BaseModel):
     gate: str
@@ -172,6 +203,9 @@ class EvaluationRequest(BaseModel):
     building_profile_source: Optional[str] = Field(None, description="건물 프로파일 소스")
     building_source_chain: Optional[List[str]] = Field(None, description="건물 소스 체인")
     building_confidence: Optional[float] = Field(None, description="건물 신뢰도 (0-1)")
+    building_evidence: Optional[Dict[str, Any]] = Field(None, description="건물 근거 객체")
+    road_evidence: Optional[Dict[str, Any]] = Field(None, description="도로 폭 근거 객체")
+    weather_evidence: Optional[Dict[str, Any]] = Field(None, description="기상 근거 객체")
 
 
 class FootprintCacheRequest(BaseModel):
@@ -188,7 +222,7 @@ class EvaluationResponse(BaseModel):
     urban_factors: Dict
     gates: List[GateResult]
     final_judgment: JudgmentLevel
-    ews: float
+    ews: Optional[float]
     drone_spec: Dict
     source: Optional[str] = None
     profile_source: Optional[str] = None
@@ -203,6 +237,10 @@ class EvaluationResponse(BaseModel):
     wind_profiler_profile: Optional[Dict] = None
     selected_layer: Optional[Dict] = None
     profile_layers: Optional[List[Dict]] = None
+    building_evidence: Optional[Dict] = None
+    road_evidence: Optional[Dict] = None
+    weather_evidence: Optional[Dict] = None
+    input_quality: Optional[Dict] = None
 
 
 class RoutePoint(BaseModel):
@@ -325,7 +363,9 @@ def _attach_weather_provenance(
     wind_profiler: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     payload = dict(weather)
-    source_chain = _parse_source_chain(payload.get("source"))
+    source_chain = _normalize_source_chain(payload.get("source_chain") or [])
+    if not source_chain:
+        source_chain = _parse_source_chain(payload.get("source"))
     if not source_chain:
         source = str(payload.get("source") or "")
         if source.startswith("surface_fallback"):
@@ -344,6 +384,456 @@ def _attach_weather_provenance(
     payload["profile_source"] = _weather_profile_source(upper_air, wind_profiler)
     payload["stale_cache"] = bool(payload.get("stale_cache", False))
     return payload
+
+
+def _source_chain_contains(source_chain: List[str], hints: tuple[str, ...]) -> bool:
+    lowered = [token.lower() for token in source_chain]
+    return any(any(hint in token for hint in hints) for token in lowered)
+
+
+def _weather_is_authoritative(source_chain: List[str], stale_cache: bool) -> bool:
+    if stale_cache:
+        return False
+    return _source_chain_contains(source_chain, AUTHORITATIVE_WEATHER_SOURCE_TOKENS)
+
+
+def _default_weather_fields() -> Dict[str, Any]:
+    return {
+        "wind_speed": 5.0,
+        "gust_speed": 8.0,
+        "wind_direction": 0,
+        "visibility": 10.0,
+        "precipitation_prob": 0,
+        "temperature": 20.0,
+        "dew_point": 15.0,
+        "humidity": 50,
+        "cloud_cover": 20,
+        "weather_code": 0,
+        "sunrise": "06:00",
+        "sunset": "18:00",
+        "profile_source": "surface_only",
+    }
+
+
+def _make_weather_unavailable(reason: str, fallback: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    payload = _default_weather_fields()
+    if fallback:
+        for key in payload:
+            if key in fallback:
+                payload[key] = fallback[key]
+    payload.update(
+        {
+            "available": False,
+            "authoritative": False,
+            "authority_source": None,
+            "reason": reason,
+            "source": "weather_unavailable",
+            "source_chain": ["weather_unavailable", reason],
+            "stale_cache": bool(fallback and fallback.get("stale_cache")),
+        }
+    )
+    return payload
+
+
+def _make_fresh_weather_cache_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    cached = dict(payload)
+    cached["source"] = "kma_surface_cache"
+    cached["source_chain"] = _normalize_source_chain(["kma_surface_cache"], payload.get("source_chain") or payload.get("source"))
+    cached["available"] = True
+    cached["authoritative"] = True
+    cached["authority_source"] = "kma_surface_cache"
+    cached["stale_cache"] = False
+    return cached
+
+
+def _build_weather_evidence(
+    weather: Dict[str, Any],
+    upper_air: Optional[Dict[str, Any]] = None,
+    wind_profiler: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    source_chain = _normalize_source_chain(weather.get("source_chain") or [], weather.get("source"))
+    stale_cache = bool(weather.get("stale_cache", False))
+    authoritative = bool(weather.get("authoritative")) and _weather_is_authoritative(source_chain, stale_cache)
+    if not authoritative:
+        authoritative = _weather_is_authoritative(source_chain, stale_cache)
+    available = bool(weather.get("available", "weather_unavailable" not in source_chain))
+    if weather.get("reason") == "surface_weather_timeout":
+        available = False
+    status = "official_verified" if authoritative else ("unavailable" if not available else "estimated")
+    authority_source = weather.get("authority_source")
+    if authoritative and not authority_source:
+        authority_source = next((token for token in source_chain if token in AUTHORITATIVE_WEATHER_SOURCE_TOKENS), source_chain[0] if source_chain else None)
+    return {
+        "available": available,
+        "authoritative": authoritative,
+        "status": status,
+        "source": weather.get("source"),
+        "source_chain": source_chain,
+        "authority_source": authority_source,
+        "profile_source": weather.get("profile_source"),
+        "stale_cache": stale_cache,
+        "reason": weather.get("reason"),
+        "upper_air_available": bool(upper_air),
+        "wind_profiler_available": bool(wind_profiler),
+    }
+
+
+def _build_building_evidence(request: EvaluationRequest) -> Dict[str, Any]:
+    provided = dict(request.building_evidence or {})
+    source_chain = _normalize_source_chain(
+        provided.get("source_chain") or [],
+        request.building_source_chain or [],
+        request.building_source or None,
+        request.building_profile_source or None,
+    )
+    available = bool(provided.get("available", request.building_height > 0))
+    if "official_available" in provided:
+        official_available = bool(provided.get("official_available"))
+    else:
+        official_available = (
+            available
+            and _source_chain_contains(source_chain, OFFICIAL_BUILDING_SOURCE_HINTS)
+            and not _source_chain_contains(source_chain, UNVERIFIED_BUILDING_SOURCE_HINTS)
+        )
+    status = str(provided.get("status") or ("official_verified" if official_available else ("estimated" if available else "unavailable")))
+    return {
+        "available": available,
+        "official_available": official_available,
+        "status": status,
+        "height_m": request.building_height,
+        "source": request.building_source or (source_chain[0] if source_chain else "building_unavailable"),
+        "profile_source": request.building_profile_source,
+        "source_chain": source_chain,
+        "confidence": _clamp(request.building_confidence if request.building_confidence is not None else provided.get("confidence", 0.72)),
+    }
+
+
+def _normalize_road_evidence(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    road = dict(payload or {})
+    source_chain = _normalize_source_chain(road.get("source_chain") or [], road.get("source"))
+    available = bool(road.get("available"))
+    official_available = bool(road.get("official_available"))
+    status = "official_verified" if official_available else ("estimated" if available else "unavailable")
+    return {
+        "available": available,
+        "official_available": official_available,
+        "status": status,
+        "width_m": road.get("width_m"),
+        "lane_count": road.get("lane_count"),
+        "road_name": road.get("road_name"),
+        "source": road.get("source", "official_road_width_unavailable"),
+        "source_chain": source_chain,
+        "reason": road.get("reason"),
+        "query_meta": road.get("query_meta"),
+    }
+
+
+def _build_input_quality(
+    building_evidence: Dict[str, Any],
+    road_evidence: Dict[str, Any],
+    weather_evidence: Dict[str, Any],
+) -> Dict[str, Any]:
+    missing_prerequisites: List[str] = []
+    reasons: List[str] = []
+
+    if not building_evidence.get("official_available"):
+        missing_prerequisites.append("building")
+        reasons.append(f'building:{building_evidence.get("status")}')
+    if not road_evidence.get("official_available"):
+        missing_prerequisites.append("road_width")
+        reasons.append(f'road_width:{road_evidence.get("reason") or road_evidence.get("status")}')
+    if not (weather_evidence.get("available") and weather_evidence.get("authoritative")):
+        missing_prerequisites.append("weather")
+        reasons.append(f'weather:{weather_evidence.get("reason") or weather_evidence.get("status")}')
+
+    status = "hold" if missing_prerequisites else "ready"
+    return {
+        "status": status,
+        "missing_prerequisites": missing_prerequisites,
+        "reasons": reasons,
+    }
+
+
+def _vworld_api_key() -> Optional[str]:
+    for key in (
+        "VWORLD_DATA_API_KEY",
+        "VWORLD_OFFICIAL_DATA_API_KEY",
+        "VITE_VWORLD_API_KEY",
+        "NEXT_PUBLIC_VWORLD_API_KEY",
+        "VWORLD_API_KEY",
+    ):
+        value = os.getenv(key)
+        if value:
+            return value
+    return None
+
+
+def _vworld_referer() -> str:
+    return str(os.getenv("VWORLD_REFERER") or os.getenv("VWORLD_DOMAIN") or "https://uav-vercel.pages.dev/").strip()
+
+
+def _parse_loose_number(value: Any) -> Optional[float]:
+    if isinstance(value, (int, float)):
+        return float(value) if math.isfinite(float(value)) else None
+    if not isinstance(value, str):
+        return None
+    cleaned = "".join(char for char in value if char.isdigit() or char in ".+-")
+    if not cleaned:
+        return None
+    try:
+        parsed = float(cleaned)
+    except ValueError:
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _extract_road_width_meters(properties: Dict[str, Any]) -> Optional[float]:
+    for key in ("width", "road_width", "roadwidth", "r_width", "rd_width", "road_bt", "rvwd", "wdt", "wid", "dwg_wid", "std_width", "carriageway_width"):
+        value = _parse_loose_number(properties.get(key))
+        if value is not None and value > 0:
+            return round(value, 1)
+    return None
+
+
+def _extract_road_lane_count(properties: Dict[str, Any]) -> Optional[int]:
+    for key in ("rdln", "lanes", "lane_count", "lanecount", "lane_cnt", "lane_num", "ln_cnt", "car_lane", "car_lanes"):
+        value = _parse_loose_number(properties.get(key))
+        if value is not None and value > 0:
+            return max(1, int(round(value)))
+    return None
+
+
+def _extract_road_name(properties: Dict[str, Any]) -> Optional[str]:
+    for key in ("rdnm", "name", "name:ko", "road_name", "rd_nm", "rn", "display_name", "label"):
+        value = str(properties.get(key) or "").strip()
+        if value:
+            return value
+    return None
+
+
+def _lonlat_to_mercator(lon: float, lat: float) -> tuple[float, float]:
+    origin_shift = 20037508.34
+    x = lon * origin_shift / 180.0
+    lat = max(min(lat, 89.5), -89.5)
+    y = math.log(math.tan((90.0 + lat) * math.pi / 360.0)) / (math.pi / 180.0)
+    y = y * origin_shift / 180.0
+    return x, y
+
+
+def _mercator_to_lonlat(x: float, y: float) -> tuple[float, float]:
+    origin_shift = 20037508.34
+    lon = (x / origin_shift) * 180.0
+    lat = (y / origin_shift) * 180.0
+    lat = 180.0 / math.pi * (2.0 * math.atan(math.exp(lat * math.pi / 180.0)) - math.pi / 2.0)
+    return lon, lat
+
+
+def _build_mercator_bbox(lon: float, lat: float, radius_m: float) -> str:
+    x, y = _lonlat_to_mercator(lon, lat)
+    return f"{x - radius_m},{y - radius_m},{x + radius_m},{y + radius_m}"
+
+
+def _point_to_segment_distance(px: float, py: float, ax: float, ay: float, bx: float, by: float) -> float:
+    dx = bx - ax
+    dy = by - ay
+    if dx == 0 and dy == 0:
+        return math.hypot(px - ax, py - ay)
+    ratio = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
+    ratio = max(0.0, min(1.0, ratio))
+    closest_x = ax + ratio * dx
+    closest_y = ay + ratio * dy
+    return math.hypot(px - closest_x, py - closest_y)
+
+
+def _parse_linestring_wkt(value: str) -> List[List[List[float]]]:
+    text = value.strip()
+    if not text:
+        return []
+    upper = text.upper()
+    if upper.startswith("LINESTRING(") and text.endswith(")"):
+        body = text[text.find("(") + 1 : -1]
+        return [[_parse_wkt_point_pair(pair) for pair in body.split(",") if _parse_wkt_point_pair(pair)]]
+    if upper.startswith("MULTILINESTRING(") and text.endswith(")"):
+        body = text[text.find("(") + 1 : -1]
+        lines: List[List[List[float]]] = []
+        for chunk in body.split("),"):
+            clean = chunk.replace("(", "").replace(")", "")
+            line = [_parse_wkt_point_pair(pair) for pair in clean.split(",") if _parse_wkt_point_pair(pair)]
+            if line:
+                lines.append(line)
+        return lines
+    return []
+
+
+def _parse_wkt_point_pair(pair: str) -> Optional[List[float]]:
+    values = [token for token in pair.strip().split(" ") if token]
+    if len(values) < 2:
+        return None
+    try:
+        return [float(values[0]), float(values[1])]
+    except ValueError:
+        return None
+
+
+def _geometry_paths(feature: Dict[str, Any]) -> List[List[List[float]]]:
+    geometry = feature.get("geometry") or {}
+    geometry_type = str(geometry.get("type") or "").lower()
+    coords = geometry.get("coordinates") or []
+    if geometry_type == "linestring" and len(coords) >= 2:
+        return [coords]
+    if geometry_type == "multilinestring":
+        return [path for path in coords if len(path) >= 2]
+    properties = feature.get("properties") or feature.get("attributes") or {}
+    ag_geom = properties.get("ag_geom")
+    if isinstance(ag_geom, str):
+        return _parse_linestring_wkt(ag_geom)
+    return []
+
+
+def _extract_vworld_features(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    result = (payload.get("response") or {}).get("result") or payload.get("result") or {}
+    collection = result.get("featureCollection") or result.get("FeatureCollection") or payload.get("featureCollection") or payload.get("FeatureCollection") or {}
+    return collection.get("features") or result.get("features") or payload.get("features") or []
+
+
+def _normalize_road_candidate(feature: Dict[str, Any], lat: float, lon: float) -> Optional[Dict[str, Any]]:
+    properties = dict(feature.get("properties") or feature.get("attributes") or {})
+    width_m = _extract_road_width_meters(properties)
+    lane_count = _extract_road_lane_count(properties)
+    road_name = _extract_road_name(properties)
+    if width_m is None and lane_count is None and not road_name:
+        return None
+    paths = _geometry_paths(feature)
+    target_x, target_y = _lonlat_to_mercator(lon, lat)
+    edge_distance_m = None
+    for path in paths:
+        for start, end in zip(path, path[1:]):
+            segment_distance = _point_to_segment_distance(target_x, target_y, float(start[0]), float(start[1]), float(end[0]), float(end[1]))
+            if edge_distance_m is None or segment_distance < edge_distance_m:
+                edge_distance_m = segment_distance
+    source = "official_road_width" if width_m is not None else ("official_road_lanes_estimate" if lane_count is not None else "official_road_width_unavailable")
+    return {
+        "available": width_m is not None or lane_count is not None,
+        "official_available": width_m is not None,
+        "width_m": width_m,
+        "lane_count": lane_count,
+        "road_name": road_name,
+        "source": source,
+        "source_chain": ["vworld_wfs", source],
+        "edge_distance_m": round(edge_distance_m, 1) if edge_distance_m is not None else None,
+        "properties": properties,
+    }
+
+
+def _build_vworld_wfs_request_url(endpoint: Dict[str, str], bbox: str, key: str, referer: str) -> str:
+    url = httpx.URL(endpoint["url"])
+    params = {
+        "service" if endpoint["mode"] == "api" else "SERVICE": "WFS",
+        "request" if endpoint["mode"] == "api" else "REQUEST": "GetFeature",
+        "version" if endpoint["mode"] == "api" else "VERSION": "1.1.0",
+        "typename" if endpoint["mode"] == "api" else "TYPENAME": VWORLD_ROAD_LAYER,
+        "maxfeatures" if endpoint["mode"] == "api" else "MAXFEATURES": "40",
+        "srsname" if endpoint["mode"] == "api" else "SRSNAME": "EPSG:3857",
+        "output" if endpoint["mode"] == "api" else "OUTPUT": "application/json",
+        "exceptions" if endpoint["mode"] == "api" else "EXCEPTIONS": "text/xml",
+        "propertyname" if endpoint["mode"] == "api" else "PROPERTYNAME": ",".join(VWORLD_ROAD_PROPERTY_KEYS),
+        "bbox" if endpoint["mode"] == "api" else "BBOX": bbox,
+    }
+    if endpoint["mode"] == "api":
+        params["key"] = key
+    else:
+        params["APIKEY"] = key
+        params["DOMAIN"] = referer
+    return str(url.copy_merge_params(params))
+
+
+async def fetch_road_width_evidence(lat: float, lon: float, road_name: Optional[str] = None) -> Dict[str, Any]:
+    key = _vworld_api_key()
+    referer = _vworld_referer()
+    if not key:
+        return {
+            "available": False,
+            "official_available": False,
+            "width_m": None,
+            "lane_count": None,
+            "road_name": road_name,
+            "source": "official_road_width_unavailable",
+            "source_chain": ["vworld_wfs", "official_road_width_unavailable"],
+            "reason": "missing_vworld_data_api_key",
+            "query_meta": {"layer": VWORLD_ROAD_LAYER},
+        }
+
+    last_reason = "road_feature_not_matched"
+    async with httpx.AsyncClient(timeout=VWORLD_REQUEST_TIMEOUT_S) as client:
+        for radius_m in VWORLD_ROAD_QUERY_RADII_M:
+            bbox = _build_mercator_bbox(lon, lat, radius_m)
+            for endpoint in VWORLD_WFS_API_ENDPOINTS:
+                request_url = _build_vworld_wfs_request_url(endpoint, bbox, key, referer)
+                query_meta = {
+                    "layer": VWORLD_ROAD_LAYER,
+                    "radius_m": radius_m,
+                    "bbox": bbox,
+                    "endpoint_mode": endpoint["mode"],
+                    "property_names": list(VWORLD_ROAD_PROPERTY_KEYS),
+                }
+                try:
+                    response = await client.get(
+                        request_url,
+                        headers={
+                            "Accept": "application/json",
+                            "Referer": referer,
+                            "User-Agent": "uav-dashboard/road-width-authority",
+                        },
+                    )
+                except Exception:
+                    last_reason = "network_error"
+                    continue
+                if response.status_code != 200:
+                    last_reason = f"upstream_status_{response.status_code}"
+                    continue
+                if "ServiceException" in response.text:
+                    last_reason = "road_feature_not_matched"
+                    continue
+                try:
+                    payload = json.loads(response.text)
+                except json.JSONDecodeError:
+                    last_reason = "malformed_upstream_payload"
+                    continue
+                candidates = [
+                    candidate
+                    for candidate in (
+                        _normalize_road_candidate(feature, lat, lon)
+                        for feature in _extract_vworld_features(payload)
+                    )
+                    if candidate and candidate.get("available")
+                ]
+                if not candidates:
+                    last_reason = "road_feature_not_matched"
+                    continue
+                candidates.sort(
+                    key=lambda item: (
+                        not bool(item.get("official_available")),
+                        item.get("edge_distance_m") if item.get("edge_distance_m") is not None else float("inf"),
+                        -(item.get("width_m") or 0.0),
+                    )
+                )
+                selected = dict(candidates[0])
+                selected["query_meta"] = query_meta
+                selected["source_chain"] = ["vworld_wfs", selected.get("source", "official_road_width"), VWORLD_ROAD_LAYER]
+                selected["reason"] = "official_road_width" if selected.get("official_available") else "official_road_lanes_estimate"
+                return selected
+
+    return {
+        "available": False,
+        "official_available": False,
+        "width_m": None,
+        "lane_count": None,
+        "road_name": road_name,
+        "source": "official_road_width_unavailable",
+        "source_chain": ["vworld_wfs", "official_road_width_unavailable"],
+        "reason": last_reason,
+        "query_meta": {"layer": VWORLD_ROAD_LAYER},
+    }
 
 
 def _building_source_quality(
@@ -388,36 +878,25 @@ async def fetch_kp_index_safe() -> float:
 async def fetch_weather_safe(lat: float, lon: float) -> Dict:
     cache_key = _cache_key_for_latlon(lat, lon)
     try:
-        return await asyncio.wait_for(fetch_weather(lat, lon), timeout=SURFACE_WEATHER_REQUEST_TIMEOUT_S)
+        weather = _attach_weather_provenance(
+            await asyncio.wait_for(fetch_weather(lat, lon), timeout=SURFACE_WEATHER_REQUEST_TIMEOUT_S)
+        )
+        if weather.get("source") == "surface_fallback" or "surface_fallback" in weather.get("source_chain", []):
+            return _make_weather_unavailable("surface_weather_timeout", fallback=weather)
+        weather["available"] = bool(weather.get("available", True))
+        weather["authoritative"] = _weather_is_authoritative(weather.get("source_chain", []), bool(weather.get("stale_cache")))
+        weather["authority_source"] = (
+            next((token for token in weather.get("source_chain", []) if token in AUTHORITATIVE_WEATHER_SOURCE_TOKENS), None)
+            if weather.get("authoritative")
+            else weather.get("authority_source")
+        )
+        return weather
     except Exception:
-        stale = _cache_get_stale(WEATHER_LAST_GOOD_CACHE, cache_key, WEATHER_STALE_TTL_S)
-        if stale:
-            return _attach_weather_provenance(
-                _mark_source_suffix(stale, "stale_surface_cache", "open_meteo_surface") or {}
-            )
         cached = _cache_get(WEATHER_CACHE, cache_key, WEATHER_CACHE_TTL_S)
-        if cached:
-            return _attach_weather_provenance(
-                _mark_source_suffix(cached, "memory_surface_cache", "open_meteo_surface") or {}
-            )
-        return {
-            "wind_speed": 5.0,
-            "gust_speed": 8.0,
-            "wind_direction": 0,
-            "visibility": 10.0,
-            "precipitation_prob": 10,
-            "temperature": 20,
-            "dew_point": 15,
-            "humidity": 50,
-            "cloud_cover": 20,
-            "weather_code": 0,
-            "sunrise": "06:00",
-            "sunset": "18:00",
-            "source": "surface_fallback + timeout_guard",
-            "source_chain": ["surface_fallback", "timeout_guard"],
-            "profile_source": "surface_only",
-            "stale_cache": False
-        }
+        if cached and _weather_is_authoritative(_normalize_source_chain(cached.get("source_chain") or [], cached.get("source")), False):
+            return _attach_weather_provenance(_make_fresh_weather_cache_payload(cached))
+        stale = _cache_get_stale(WEATHER_LAST_GOOD_CACHE, cache_key, WEATHER_STALE_TTL_S)
+        return _attach_weather_provenance(_make_weather_unavailable("surface_weather_timeout", fallback=stale))
 
 
 async def fetch_kma_upper_air_profile_safe(lat: float, lon: float) -> Optional[Dict]:
@@ -1065,6 +1544,10 @@ async def get_kp_index_api():
     kp = await fetch_kp_index()
     return {"kp_index": kp}
 
+@app.get("/api/road-width")
+async def get_road_width_api(lat: float, lon: float, road_name: Optional[str] = None):
+    return await fetch_road_width_evidence(lat, lon, road_name=road_name)
+
 @app.get("/api/weather")
 async def get_weather_api(lat: float = 37.5665, lon: float = 126.9780):
     w = await fetch_weather_safe(lat, lon)
@@ -1090,7 +1573,8 @@ async def get_weather_api(lat: float = 37.5665, lon: float = 126.9780):
     if source_suffixes:
         w["source"] = f'{w.get("source", "open_meteo_surface")} + {", ".join(source_suffixes)}'
     w = _attach_weather_provenance(w, upper_air, wind_profiler)
-    return {"weather": w}
+    weather_evidence = _build_weather_evidence(w, upper_air, wind_profiler)
+    return {"weather": w, "weather_evidence": weather_evidence}
 
 @app.post("/api/evaluate", response_model=EvaluationResponse)
 async def evaluate_flight(request: EvaluationRequest):
@@ -1113,7 +1597,10 @@ async def evaluate_flight(request: EvaluationRequest):
             "source": "manual_surface_input",
             "source_chain": ["manual_surface_input"],
             "profile_source": "surface_only",
-            "stale_cache": False
+            "stale_cache": False,
+            "available": True,
+            "authoritative": False,
+            "authority_source": None,
         }
         kp = request.kp_index or 3.0
     else:
@@ -1183,6 +1670,10 @@ async def evaluate_flight(request: EvaluationRequest):
     if source_suffixes:
         weather["source"] = f'{weather.get("source", "open_meteo_surface")} + {", ".join(source_suffixes)}'
     weather = _attach_weather_provenance(weather, upper_air, wind_profiler)
+    if request.weather_evidence:
+        weather["available"] = request.weather_evidence.get("available", weather.get("available"))
+        weather["authoritative"] = request.weather_evidence.get("authoritative", weather.get("authoritative"))
+        weather["authority_source"] = request.weather_evidence.get("authority_source", weather.get("authority_source"))
     profile_source = weather.get("profile_source", "surface_only")
 
     # 2. Drone Specs
@@ -1190,29 +1681,119 @@ async def evaluate_flight(request: EvaluationRequest):
     
     # 3. Urban Factors
     align_factor = {"일치": 1.3, "직각": 0.9, "불명": 1.1}.get(request.wind_alignment, 1.0)
-    building_source_chain = _normalize_source_chain(
-        request.building_source_chain or [],
-        request.building_source or "manual_input",
-        request.building_profile_source or None,
-    )
+    building_evidence = _build_building_evidence(request)
+    building_source_chain = building_evidence["source_chain"]
     if not building_source_chain:
         building_source_chain = ["manual_input"]
     building_source = request.building_source or building_source_chain[0]
     building_profile_source = request.building_profile_source or "manual_input"
-    building_confidence = _clamp(request.building_confidence if request.building_confidence is not None else 0.72)
+    building_confidence = float(building_evidence["confidence"])
+    raw_road_evidence = request.road_evidence if request.road_evidence is not None else await fetch_road_width_evidence(request.latitude, request.longitude)
+    road_evidence = _normalize_road_evidence(raw_road_evidence)
+    weather_evidence = _build_weather_evidence(weather, upper_air, wind_profiler)
+    input_quality = _build_input_quality(building_evidence, road_evidence, weather_evidence)
+    effective_street_width = float(road_evidence["width_m"] or request.street_width or 0.0)
+    hw_ratio = request.building_height / effective_street_width if effective_street_width > 0 else None
+
+    if input_quality["status"] == "hold":
+        gates = [
+            GateResult(
+                gate="Authority",
+                status=JudgmentLevel.HOLD,
+                reason=" / ".join(input_quality["reasons"]) or "authoritative inputs unavailable",
+            )
+        ]
+        profile_max_altitude = int(max(50, min(200, math.ceil(request.mission_altitude / 5) * 5)))
+        profile_layers = build_profile_layers(
+            weather,
+            upper_air,
+            wind_profiler,
+            altitude_max_m=profile_max_altitude,
+            step_m=5
+        )
+        urban_factors = {
+            "H": request.building_height,
+            "W": road_evidence.get("width_m"),
+            "H_W_ratio": round(hw_ratio, 2) if hw_ratio is not None else None,
+            "Fcanyon": None,
+            "Fcanyon_raw": None,
+            "building_canyon_weight": None,
+            "building_source": building_source,
+            "building_profile_source": building_profile_source,
+            "building_source_chain": building_source_chain,
+            "building_confidence": round(building_confidence, 2),
+            "road_width_source": road_evidence.get("source"),
+            "alignment_factor": align_factor,
+            "mission_altitude": request.mission_altitude,
+        }
+        weather_source_chain = weather.get("source_chain", [])
+        evaluation_source_chain = _normalize_source_chain(weather_source_chain, building_source_chain, road_evidence.get("source_chain"))
+        stale_cache = bool(
+            weather.get("stale_cache")
+            or (upper_air and upper_air.get("stale_cache"))
+            or (wind_profiler and wind_profiler.get("stale_cache"))
+        )
+        return EvaluationResponse(
+            timestamp=datetime.now().isoformat(),
+            location={"lat": request.latitude, "lon": request.longitude},
+            weather=weather,
+            urban_factors=urban_factors,
+            gates=gates,
+            final_judgment=JudgmentLevel.HOLD,
+            ews=None,
+            drone_spec=spec,
+            source="backend",
+            profile_source=profile_source,
+            source_chain=evaluation_source_chain,
+            weather_source_chain=weather_source_chain,
+            building_source=building_source,
+            building_profile_source=building_profile_source,
+            building_source_chain=building_source_chain,
+            building_confidence=round(building_confidence, 2),
+            stale_cache=stale_cache,
+            upper_air_profile={
+                "station_id": upper_air["station_id"],
+                "station_name": upper_air["station_name"],
+                "observed_at_utc": upper_air["observed_at_utc"],
+                "layer_count": len(upper_air["layers"]),
+                "stale_cache": upper_air.get("stale_cache", False)
+            } if upper_air and "station_id" in upper_air else None,
+            wind_profiler_profile={
+                "station_id": wind_profiler["station_id"],
+                "station_name": wind_profiler["station_name"],
+                "observed_at_utc": wind_profiler["observed_at_utc"],
+                "mode": wind_profiler["mode"],
+                "layer_count": len(wind_profiler["layers"]),
+                "stale_cache": wind_profiler.get("stale_cache", False)
+            } if wind_profiler and "station_id" in wind_profiler else None,
+            selected_layer={
+                "height_m": round(selected_layer["height_m"], 1),
+                "pressure_hpa": round(selected_layer["pressure_hpa"], 1),
+                "temperature_c": round(selected_layer["temperature_c"], 1),
+                "dew_point_c": round(selected_layer["dew_point_c"], 1),
+                "wind_direction_deg": round(selected_layer["wind_direction_deg"], 1),
+                "wind_speed_mps": round(selected_layer["wind_speed_mps"], 2),
+                "density": weather.get("upper_air_density")
+            } if selected_layer else None,
+            profile_layers=profile_layers,
+            building_evidence=building_evidence,
+            road_evidence=road_evidence,
+            weather_evidence=weather_evidence,
+            input_quality=input_quality,
+        )
+
     building_canyon_weight = _resolve_building_canyon_weight(
         building_confidence,
         building_source,
         building_source_chain,
     )
-    fcanyon_raw = calculate_fcanyon(request.building_height, request.street_width)
+    fcanyon_raw = calculate_fcanyon(request.building_height, effective_street_width)
     fcanyon = 1 + (fcanyon_raw - 1) * building_canyon_weight
     ews = calculate_ews(weather["wind_speed"], fcanyon, align_factor)
-    hw_ratio = request.building_height / request.street_width if request.street_width > 0 else 1.0
     
     urban_factors = {
-        "H": request.building_height, "W": request.street_width,
-        "H_W_ratio": round(hw_ratio, 2),
+        "H": request.building_height, "W": effective_street_width,
+        "H_W_ratio": round(hw_ratio, 2) if hw_ratio is not None else None,
         "Fcanyon": round(fcanyon, 2),
         "Fcanyon_raw": round(fcanyon_raw, 2),
         "building_canyon_weight": round(building_canyon_weight, 3),
@@ -1220,11 +1801,12 @@ async def evaluate_flight(request: EvaluationRequest):
         "building_profile_source": building_profile_source,
         "building_source_chain": building_source_chain,
         "building_confidence": round(building_confidence, 2),
+        "road_width_source": road_evidence.get("source"),
         "alignment_factor": align_factor,
         "mission_altitude": request.mission_altitude
     }
     weather_source_chain = weather.get("source_chain", [])
-    evaluation_source_chain = _normalize_source_chain(weather_source_chain, building_source_chain)
+    evaluation_source_chain = _normalize_source_chain(weather_source_chain, building_source_chain, road_evidence.get("source_chain"))
     stale_cache = bool(
         weather.get("stale_cache")
         or (upper_air and upper_air.get("stale_cache"))
@@ -1266,13 +1848,17 @@ async def evaluate_flight(request: EvaluationRequest):
         building_profile_source=building_profile_source,
         building_source_chain=building_source_chain,
         building_confidence=round(building_confidence, 2),
+        building_evidence=building_evidence,
+        road_evidence=road_evidence,
+        weather_evidence=weather_evidence,
+        input_quality=input_quality,
         upper_air_profile={
             "station_id": upper_air["station_id"],
             "station_name": upper_air["station_name"],
             "observed_at_utc": upper_air["observed_at_utc"],
             "layer_count": len(upper_air["layers"]),
             "stale_cache": upper_air.get("stale_cache", False)
-        } if upper_air else None,
+        } if upper_air and "station_id" in upper_air else None,
         wind_profiler_profile={
             "station_id": wind_profiler["station_id"],
             "station_name": wind_profiler["station_name"],
@@ -1280,7 +1866,7 @@ async def evaluate_flight(request: EvaluationRequest):
             "mode": wind_profiler["mode"],
             "layer_count": len(wind_profiler["layers"]),
             "stale_cache": wind_profiler.get("stale_cache", False)
-        } if wind_profiler else None,
+        } if wind_profiler and "station_id" in wind_profiler else None,
         selected_layer={
             "height_m": round(selected_layer["height_m"], 1),
             "pressure_hpa": round(selected_layer["pressure_hpa"], 1),
