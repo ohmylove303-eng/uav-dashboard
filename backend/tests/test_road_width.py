@@ -3,6 +3,7 @@ import json
 import sys
 import unittest
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 
 from fastapi.testclient import TestClient
 
@@ -45,6 +46,18 @@ class _FakeAsyncClient:
 class RoadWidthRouteTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(main.app)
+
+    def test_api_wfs_request_includes_registered_domain(self):
+        request_url = main._build_vworld_wfs_request_url(
+            {"url": "https://api.vworld.kr/req/wfs", "mode": "api"},
+            "1,2,3,4",
+            "test-key",
+            "https://uav-vercel.pages.dev/",
+        )
+        query = parse_qs(urlparse(request_url).query)
+
+        self.assertEqual(query["key"], ["test-key"])
+        self.assertEqual(query["domain"], ["https://uav-vercel.pages.dev/"])
 
     def test_route_builds_vworld_request_and_selects_closest_official_feature(self):
         _FakeAsyncClient.calls = []

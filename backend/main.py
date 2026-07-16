@@ -791,6 +791,7 @@ def _build_vworld_wfs_request_url(endpoint: Dict[str, str], bbox: str, key: str,
     }
     if endpoint["mode"] == "api":
         params["key"] = key
+        params["domain"] = referer
     else:
         params["APIKEY"] = key
         params["DOMAIN"] = referer
