@@ -92,11 +92,6 @@ class BuildingFootprintProvenanceTests(unittest.IsolatedAsyncioTestCase):
             "source": "vworld_wfs",
             "source_origin": "frontend_context_seed",
         }
-        capabilities_xml = (
-            "<FeatureTypeList>"
-            "<FeatureType><Name>lt_c_spbd</Name></FeatureType>"
-            "</FeatureTypeList>"
-        )
         feature_payload = {
             "features": [
                 {
@@ -120,12 +115,12 @@ class BuildingFootprintProvenanceTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(building_footprint, "_load_footprint_cache", return_value=[cache_entry]),
-            patch.object(building_footprint, "_lookup_osm_fallback_sync", return_value=None),
+            patch.object(building_footprint, "_lookup_osm_fallback_sync", return_value=None) as osm_lookup,
             patch.object(building_footprint, "_resolve_vworld_api_key", return_value="test-key"),
             patch.object(
                 building_footprint,
                 "_fetch_text_with_retries_sync",
-                side_effect=[capabilities_xml, json.dumps(feature_payload)],
+                return_value=json.dumps(feature_payload),
             ),
             patch.object(building_footprint, "_store_footprint_cache_entry", return_value={}),
         ):
@@ -137,6 +132,7 @@ class BuildingFootprintProvenanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["field_sources"]["height_m"]["status"], "official_verified")
         self.assertEqual(result["field_sources"]["far_percent"]["status"], "unverified_cache")
         self.assertEqual(result["field_sources"]["bcr_percent"]["status"], "unverified_cache")
+        osm_lookup.assert_not_called()
 
     async def test_osm_fallback_stays_estimated(self) -> None:
         mock_osm = {

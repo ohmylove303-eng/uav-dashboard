@@ -16,7 +16,9 @@ import asyncio
 import os
 import json
 import math
+import re
 import time
+from urban_canyon import measure_facade_gap
 
 app = FastAPI(
     title="UAV Urban Ops API",
@@ -137,6 +139,8 @@ VWORLD_ROAD_LAYER = "lt_l_n3a0020000"
 VWORLD_ROAD_PROPERTY_KEYS = ("rvwd", "rdln", "rdnm", "ag_geom")
 VWORLD_ROAD_QUERY_RADII_M = (180, 500, 1500)
 VWORLD_REQUEST_TIMEOUT_S = float(os.getenv("VWORLD_REQUEST_TIMEOUT_S", "5.0"))
+CANYON_EVIDENCE_CACHE_TTL_S = float(os.getenv("CANYON_EVIDENCE_CACHE_TTL_S", "300"))
+CANYON_EVIDENCE_CACHE: Dict[str, Dict[str, Any]] = {}
 AUTHORITATIVE_WEATHER_SOURCE_TOKENS = (
     "kma_surface_observation",
     "kma_surface_forecast",
@@ -205,6 +209,7 @@ class EvaluationRequest(BaseModel):
     building_confidence: Optional[float] = Field(None, description="건물 신뢰도 (0-1)")
     building_evidence: Optional[Dict[str, Any]] = Field(None, description="건물 근거 객체")
     road_evidence: Optional[Dict[str, Any]] = Field(None, description="도로 폭 근거 객체")
+    canyon_evidence: Optional[Dict[str, Any]] = Field(None, description="건물 간 이격폭 근거 객체")
     weather_evidence: Optional[Dict[str, Any]] = Field(None, description="기상 근거 객체")
 
 
@@ -239,6 +244,7 @@ class EvaluationResponse(BaseModel):
     profile_layers: Optional[List[Dict]] = None
     building_evidence: Optional[Dict] = None
     road_evidence: Optional[Dict] = None
+    canyon_evidence: Optional[Dict] = None
     weather_evidence: Optional[Dict] = None
     input_quality: Optional[Dict] = None
 
@@ -297,6 +303,11 @@ def _mark_stale_payload(value: Any):
 
 def _cache_key_for_latlon(lat: float, lon: float) -> str:
     return f"{_round_coord(lat)},{_round_coord(lon)}"
+
+
+def _canyon_cache_key(lat: float, lon: float, road_name: Optional[str]) -> str:
+    normalized_road_name = " ".join(str(road_name or "").split()).lower()
+    return f"{_round_coord(lat, 5)},{_round_coord(lon, 5)}:{normalized_road_name}"
 
 
 def _mark_source_suffix(payload: Optional[Dict[str, Any]], suffix: str, fallback_source: str) -> Optional[Dict[str, Any]]:
@@ -487,15 +498,45 @@ def _build_building_evidence(request: EvaluationRequest) -> Dict[str, Any]:
         request.building_profile_source or None,
     )
     available = bool(provided.get("available", request.building_height > 0))
+    receipt = provided.get("receipt") if isinstance(provided.get("receipt"), dict) else {}
+    receipt_sources = _normalize_source_chain(receipt.get("source_chain") or [], receipt.get("source"))
+    height_source_text = " ".join(
+        str(value or "")
+        for value in (
+            request.building_source,
+            request.building_profile_source,
+            provided.get("source"),
+            provided.get("profile_source"),
+            provided.get("derivation"),
+            provided.get("height_source"),
+            provided.get("building_height_source"),
+            *source_chain,
+        )
+    ).lower()
+    height_is_floor_derived = bool(provided.get("height_estimated_from_official_floors")) or bool(
+        re.search(r"floor(?:_|-|\s)?(?:count|estimate)|official_floor_count|derived", height_source_text)
+    )
+    height_receipt_complete = bool(
+        receipt.get("kind") == "official_building_height"
+        and receipt.get("geometry_receipt") is True
+        and receipt.get("selection_match") is True
+        and receipt_sources
+    )
     if "official_available" in provided:
-        official_available = bool(provided.get("official_available"))
+        reported_official_available = bool(provided.get("official_available"))
     else:
-        official_available = (
+        reported_official_available = (
             available
             and _source_chain_contains(source_chain, OFFICIAL_BUILDING_SOURCE_HINTS)
             and not _source_chain_contains(source_chain, UNVERIFIED_BUILDING_SOURCE_HINTS)
         )
-    status = str(provided.get("status") or ("official_verified" if official_available else ("estimated" if available else "unavailable")))
+    official_available = bool(
+        reported_official_available
+        and available
+        and height_receipt_complete
+        and not height_is_floor_derived
+    )
+    status = "official_verified" if official_available else ("estimated" if available else "unavailable")
     return {
         "available": available,
         "official_available": official_available,
@@ -505,6 +546,8 @@ def _build_building_evidence(request: EvaluationRequest) -> Dict[str, Any]:
         "profile_source": request.building_profile_source,
         "source_chain": source_chain,
         "confidence": _clamp(request.building_confidence if request.building_confidence is not None else provided.get("confidence", 0.72)),
+        "height_receipt_complete": height_receipt_complete,
+        "height_is_floor_derived": height_is_floor_derived,
     }
 
 
@@ -519,9 +562,12 @@ def _normalize_road_evidence(payload: Optional[Dict[str, Any]]) -> Dict[str, Any
         "official_available": official_available,
         "status": status,
         "width_m": road.get("width_m"),
+        "official_road_right_of_way_width_m": road.get("official_road_right_of_way_width_m", road.get("width_m")),
         "lane_count": road.get("lane_count"),
         "road_name": road.get("road_name"),
-        "source": road.get("source", "official_road_width_unavailable"),
+        "geometry_paths": road.get("geometry_paths") or [],
+        "geometry_receipt": bool(road.get("geometry_receipt")),
+        "source": road.get("source", "official_road_right_of_way_unavailable"),
         "source_chain": source_chain,
         "reason": road.get("reason"),
         "query_meta": road.get("query_meta"),
@@ -531,6 +577,7 @@ def _normalize_road_evidence(payload: Optional[Dict[str, Any]]) -> Dict[str, Any
 def _build_input_quality(
     building_evidence: Dict[str, Any],
     road_evidence: Dict[str, Any],
+    canyon_evidence: Dict[str, Any],
     weather_evidence: Dict[str, Any],
 ) -> Dict[str, Any]:
     missing_prerequisites: List[str] = []
@@ -539,9 +586,9 @@ def _build_input_quality(
     if not building_evidence.get("official_available"):
         missing_prerequisites.append("building")
         reasons.append(f'building:{building_evidence.get("status")}')
-    if not road_evidence.get("official_available"):
-        missing_prerequisites.append("road_width")
-        reasons.append(f'road_width:{road_evidence.get("reason") or road_evidence.get("status")}')
+    if not canyon_evidence.get("official_available"):
+        missing_prerequisites.append("canyon_width")
+        reasons.append(f'canyon_width:{canyon_evidence.get("reason") or canyon_evidence.get("status")}')
     if not (weather_evidence.get("available") and weather_evidence.get("authoritative")):
         missing_prerequisites.append("weather")
         reasons.append(f'weather:{weather_evidence.get("reason") or weather_evidence.get("status")}')
@@ -711,15 +758,18 @@ def _normalize_road_candidate(feature: Dict[str, Any], lat: float, lon: float) -
             segment_distance = _point_to_segment_distance(target_x, target_y, float(start[0]), float(start[1]), float(end[0]), float(end[1]))
             if edge_distance_m is None or segment_distance < edge_distance_m:
                 edge_distance_m = segment_distance
-    source = "official_road_width" if width_m is not None else ("official_road_lanes_estimate" if lane_count is not None else "official_road_width_unavailable")
+    source = "official_road_right_of_way" if width_m is not None else ("official_road_lanes_estimate" if lane_count is not None else "official_road_right_of_way_unavailable")
     return {
         "available": width_m is not None or lane_count is not None,
         "official_available": width_m is not None,
         "width_m": width_m,
+        "official_road_right_of_way_width_m": width_m,
         "lane_count": lane_count,
         "road_name": road_name,
         "source": source,
         "source_chain": ["vworld_wfs", source],
+        "geometry_paths": paths,
+        "geometry_receipt": bool(paths),
         "edge_distance_m": round(edge_distance_m, 1) if edge_distance_m is not None else None,
         "properties": properties,
     }
@@ -757,8 +807,8 @@ async def fetch_road_width_evidence(lat: float, lon: float, road_name: Optional[
             "width_m": None,
             "lane_count": None,
             "road_name": road_name,
-            "source": "official_road_width_unavailable",
-            "source_chain": ["vworld_wfs", "official_road_width_unavailable"],
+            "source": "official_road_right_of_way_unavailable",
+            "source_chain": ["vworld_wfs", "official_road_right_of_way_unavailable"],
             "reason": "missing_vworld_data_api_key",
             "query_meta": {"layer": VWORLD_ROAD_LAYER},
         }
@@ -819,8 +869,8 @@ async def fetch_road_width_evidence(lat: float, lon: float, road_name: Optional[
                 )
                 selected = dict(candidates[0])
                 selected["query_meta"] = query_meta
-                selected["source_chain"] = ["vworld_wfs", selected.get("source", "official_road_width"), VWORLD_ROAD_LAYER]
-                selected["reason"] = "official_road_width" if selected.get("official_available") else "official_road_lanes_estimate"
+                selected["source_chain"] = ["vworld_wfs", selected.get("source", "official_road_right_of_way"), VWORLD_ROAD_LAYER]
+                selected["reason"] = "official_road_right_of_way" if selected.get("official_available") else "official_road_lanes_estimate"
                 return selected
 
     return {
@@ -829,10 +879,200 @@ async def fetch_road_width_evidence(lat: float, lon: float, road_name: Optional[
         "width_m": None,
         "lane_count": None,
         "road_name": road_name,
-        "source": "official_road_width_unavailable",
-        "source_chain": ["vworld_wfs", "official_road_width_unavailable"],
+        "source": "official_road_right_of_way_unavailable",
+        "source_chain": ["vworld_wfs", "official_road_right_of_way_unavailable"],
         "reason": last_reason,
         "query_meta": {"layer": VWORLD_ROAD_LAYER},
+    }
+
+
+def _project_lonlat_ring(ring: List[List[float]]) -> List[List[float]]:
+    projected: List[List[float]] = []
+    for point in ring:
+        if not isinstance(point, (list, tuple)) or len(point) < 2:
+            continue
+        try:
+            x, y = _lonlat_to_mercator(float(point[0]), float(point[1]))
+        except (TypeError, ValueError):
+            continue
+        projected.append([x, y])
+    return projected
+
+
+def _unavailable_canyon_evidence(
+    road_evidence: Dict[str, Any],
+    reason: str,
+    target_building: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    return {
+        "available": False,
+        "official_available": False,
+        "facade_gap_m": None,
+        "effective_canyon_width_m": None,
+        "official_road_right_of_way_width_m": road_evidence.get("official_road_right_of_way_width_m", road_evidence.get("width_m")),
+        "road_name": road_evidence.get("road_name"),
+        "target_building": target_building,
+        "opposing_building": None,
+        "road_crossing_verified": False,
+        "normal_alignment": None,
+        "source": "official_canyon_width_unavailable",
+        "source_chain": _normalize_source_chain(road_evidence.get("source_chain"), "official_canyon_width_unavailable"),
+        "reason": reason,
+        "receipt": {
+            "kind": "official_canyon_width_unavailable",
+            "target_geometry_receipt": False,
+            "opposing_geometry_receipt": False,
+            "road_geometry_receipt": bool(road_evidence.get("geometry_receipt")),
+            "road_crossing_verified": False,
+            "source_chain": _normalize_source_chain(road_evidence.get("source_chain"), "official_canyon_width_unavailable"),
+        },
+    }
+
+
+def _select_target_building_from_collection(
+    collection: Dict[str, Any],
+    lat: float,
+    lon: float,
+) -> Optional[Dict[str, Any]]:
+    candidates = []
+    for feature in collection.get("features") or []:
+        ring = feature.get("ring") if isinstance(feature, dict) else None
+        if not isinstance(ring, list) or len(ring) < 4:
+            continue
+        if _point_in_polygon(lon, lat, ring):
+            candidates.append(feature)
+
+    if len(candidates) != 1:
+        return None
+
+    selected = candidates[0]
+    properties = selected.get("properties") if isinstance(selected.get("properties"), dict) else {}
+    return {
+        "id": str(selected.get("id") or properties.get("bd_mgt_sn") or properties.get("pk") or "target-building"),
+        "name": selected.get("name") or properties.get("buld_nm"),
+        "ring": selected.get("ring"),
+        "properties": properties,
+    }
+
+
+async def fetch_canyon_width_evidence(lat: float, lon: float, road_name: Optional[str] = None) -> Dict[str, Any]:
+    cache_key = _canyon_cache_key(lat, lon, road_name)
+    cached_evidence = _cache_get(CANYON_EVIDENCE_CACHE, cache_key, CANYON_EVIDENCE_CACHE_TTL_S)
+    if cached_evidence:
+        return cached_evidence
+
+    road_evidence, collection = await asyncio.gather(
+        fetch_road_width_evidence(lat, lon, road_name=road_name),
+        lookup_official_building_collection(lat, lon),
+    )
+    road_paths = road_evidence.get("geometry_paths") or []
+    if not road_evidence.get("official_available") or not road_evidence.get("geometry_receipt") or not road_paths:
+        return _unavailable_canyon_evidence(road_evidence, road_evidence.get("reason") or "official_road_geometry_not_matched")
+
+    if not collection.get("official_available"):
+        return _unavailable_canyon_evidence(
+            road_evidence,
+            collection.get("reason") or "official_building_collection_not_matched",
+        )
+
+    target = _select_target_building_from_collection(collection, lat, lon)
+    target_building = {
+        "id": target.get("id") if target else "target-building",
+        "name": target.get("name") if target else None,
+        "geometry_receipt": bool(target),
+        "selection_match": bool(target),
+    }
+    target_geometry = target.get("ring") if target else None
+    if not isinstance(target_geometry, list) or len(target_geometry) < 4:
+        return _unavailable_canyon_evidence(road_evidence, "target_official_building_not_selected", target_building)
+
+    buildings = []
+    for feature in collection.get("features") or []:
+        ring = feature.get("ring") if isinstance(feature, dict) else None
+        if not isinstance(ring, list) or len(ring) < 4:
+            continue
+        buildings.append({
+            "id": str(feature.get("id") or "official-building"),
+            "name": feature.get("name"),
+            "ring": _project_lonlat_ring(ring),
+        })
+
+    measurement = measure_facade_gap(
+        _project_lonlat_ring(target_geometry),
+        road_paths[0],
+        buildings,
+    )
+    source_chain = _normalize_source_chain(
+        collection.get("source_chain"),
+        road_evidence.get("source_chain"),
+        "official_canyon_width",
+    )
+    if not measurement.get("available"):
+        unavailable = _unavailable_canyon_evidence(road_evidence, measurement.get("reason") or "opposing_official_building_not_matched", target_building)
+        unavailable["source_chain"] = source_chain
+        unavailable["receipt"]["source_chain"] = source_chain
+        unavailable["receipt"]["target_geometry_receipt"] = True
+        return unavailable
+
+    opposing_building = {
+        "id": measurement.get("opposing_building_id"),
+        "name": measurement.get("opposing_building_name"),
+        "geometry_receipt": True,
+    }
+    receipt = {
+        "kind": "official_canyon_width",
+        "target_geometry_receipt": True,
+        "opposing_geometry_receipt": True,
+        "road_geometry_receipt": True,
+        "road_crossing_verified": True,
+        "source_chain": source_chain,
+    }
+    result = {
+        "available": True,
+        "official_available": True,
+        "facade_gap_m": measurement["facade_gap_m"],
+        "effective_canyon_width_m": measurement["facade_gap_m"],
+        "official_road_right_of_way_width_m": road_evidence.get("official_road_right_of_way_width_m", road_evidence.get("width_m")),
+        "road_name": road_evidence.get("road_name"),
+        "target_building": target_building,
+        "opposing_building": opposing_building,
+        "road_crossing_verified": True,
+        "normal_alignment": measurement.get("normal_alignment"),
+        "target_point": measurement.get("target_point"),
+        "opposing_point": measurement.get("opposing_point"),
+        "source": "official_canyon_width",
+        "source_chain": source_chain,
+        "reason": None,
+        "receipt": receipt,
+    }
+    return _cache_set(CANYON_EVIDENCE_CACHE, cache_key, result)
+
+
+def _normalize_canyon_evidence(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    canyon = dict(payload or {})
+    source_chain = _normalize_source_chain(canyon.get("source_chain") or [], canyon.get("source"))
+    receipt = canyon.get("receipt") if isinstance(canyon.get("receipt"), dict) else {}
+    facade_gap_m = _parse_loose_number(canyon.get("facade_gap_m"))
+    verified = bool(
+        canyon.get("available")
+        and canyon.get("official_available")
+        and facade_gap_m is not None
+        and receipt.get("kind") == "official_canyon_width"
+        and receipt.get("target_geometry_receipt")
+        and receipt.get("opposing_geometry_receipt")
+        and receipt.get("road_geometry_receipt")
+        and receipt.get("road_crossing_verified")
+    )
+    return {
+        "available": bool(canyon.get("available")),
+        "official_available": verified,
+        "status": "official_verified" if verified else ("estimated" if canyon.get("available") else "unavailable"),
+        "facade_gap_m": facade_gap_m if verified else None,
+        "official_road_right_of_way_width_m": _parse_loose_number(canyon.get("official_road_right_of_way_width_m")),
+        "source": canyon.get("source", "official_canyon_width_unavailable"),
+        "source_chain": source_chain,
+        "reason": canyon.get("reason"),
+        "receipt": receipt,
     }
 
 
@@ -1548,6 +1788,11 @@ async def get_kp_index_api():
 async def get_road_width_api(lat: float, lon: float, road_name: Optional[str] = None):
     return await fetch_road_width_evidence(lat, lon, road_name=road_name)
 
+
+@app.get("/api/canyon-width")
+async def get_canyon_width_api(lat: float, lon: float, road_name: Optional[str] = None):
+    return await fetch_canyon_width_evidence(lat, lon, road_name=road_name)
+
 @app.get("/api/weather")
 async def get_weather_api(lat: float = 37.5665, lon: float = 126.9780):
     w = await fetch_weather_safe(lat, lon)
@@ -1690,9 +1935,11 @@ async def evaluate_flight(request: EvaluationRequest):
     building_confidence = float(building_evidence["confidence"])
     raw_road_evidence = request.road_evidence if request.road_evidence is not None else await fetch_road_width_evidence(request.latitude, request.longitude)
     road_evidence = _normalize_road_evidence(raw_road_evidence)
+    raw_canyon_evidence = request.canyon_evidence if request.canyon_evidence is not None else await fetch_canyon_width_evidence(request.latitude, request.longitude)
+    canyon_evidence = _normalize_canyon_evidence(raw_canyon_evidence)
     weather_evidence = _build_weather_evidence(weather, upper_air, wind_profiler)
-    input_quality = _build_input_quality(building_evidence, road_evidence, weather_evidence)
-    effective_street_width = float(road_evidence["width_m"] or request.street_width or 0.0)
+    input_quality = _build_input_quality(building_evidence, road_evidence, canyon_evidence, weather_evidence)
+    effective_street_width = float(canyon_evidence["facade_gap_m"] or 0.0)
     hw_ratio = request.building_height / effective_street_width if effective_street_width > 0 else None
 
     if input_quality["status"] == "hold":
@@ -1713,8 +1960,9 @@ async def evaluate_flight(request: EvaluationRequest):
         )
         urban_factors = {
             "H": request.building_height,
-            "W": road_evidence.get("width_m"),
+            "W": canyon_evidence.get("facade_gap_m"),
             "H_W_ratio": round(hw_ratio, 2) if hw_ratio is not None else None,
+            "official_road_right_of_way_width_m": road_evidence.get("official_road_right_of_way_width_m"),
             "Fcanyon": None,
             "Fcanyon_raw": None,
             "building_canyon_weight": None,
@@ -1723,11 +1971,12 @@ async def evaluate_flight(request: EvaluationRequest):
             "building_source_chain": building_source_chain,
             "building_confidence": round(building_confidence, 2),
             "road_width_source": road_evidence.get("source"),
+            "canyon_width_source": canyon_evidence.get("source"),
             "alignment_factor": align_factor,
             "mission_altitude": request.mission_altitude,
         }
         weather_source_chain = weather.get("source_chain", [])
-        evaluation_source_chain = _normalize_source_chain(weather_source_chain, building_source_chain, road_evidence.get("source_chain"))
+        evaluation_source_chain = _normalize_source_chain(weather_source_chain, building_source_chain, road_evidence.get("source_chain"), canyon_evidence.get("source_chain"))
         stale_cache = bool(
             weather.get("stale_cache")
             or (upper_air and upper_air.get("stale_cache"))
@@ -1778,6 +2027,7 @@ async def evaluate_flight(request: EvaluationRequest):
             profile_layers=profile_layers,
             building_evidence=building_evidence,
             road_evidence=road_evidence,
+            canyon_evidence=canyon_evidence,
             weather_evidence=weather_evidence,
             input_quality=input_quality,
         )
@@ -1794,6 +2044,7 @@ async def evaluate_flight(request: EvaluationRequest):
     urban_factors = {
         "H": request.building_height, "W": effective_street_width,
         "H_W_ratio": round(hw_ratio, 2) if hw_ratio is not None else None,
+        "official_road_right_of_way_width_m": road_evidence.get("official_road_right_of_way_width_m"),
         "Fcanyon": round(fcanyon, 2),
         "Fcanyon_raw": round(fcanyon_raw, 2),
         "building_canyon_weight": round(building_canyon_weight, 3),
@@ -1802,11 +2053,12 @@ async def evaluate_flight(request: EvaluationRequest):
         "building_source_chain": building_source_chain,
         "building_confidence": round(building_confidence, 2),
         "road_width_source": road_evidence.get("source"),
+        "canyon_width_source": canyon_evidence.get("source"),
         "alignment_factor": align_factor,
         "mission_altitude": request.mission_altitude
     }
     weather_source_chain = weather.get("source_chain", [])
-    evaluation_source_chain = _normalize_source_chain(weather_source_chain, building_source_chain, road_evidence.get("source_chain"))
+    evaluation_source_chain = _normalize_source_chain(weather_source_chain, building_source_chain, road_evidence.get("source_chain"), canyon_evidence.get("source_chain"))
     stale_cache = bool(
         weather.get("stale_cache")
         or (upper_air and upper_air.get("stale_cache"))
@@ -1850,6 +2102,7 @@ async def evaluate_flight(request: EvaluationRequest):
         building_confidence=round(building_confidence, 2),
         building_evidence=building_evidence,
         road_evidence=road_evidence,
+        canyon_evidence=canyon_evidence,
         weather_evidence=weather_evidence,
         input_quality=input_quality,
         upper_air_profile={
@@ -1992,19 +2245,119 @@ async def analyze_corridor(request: CorridorAnalysisRequest):
     }
 
 
+def _build_official_building_height_evidence(footprint: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not isinstance(footprint, dict):
+        return None
+    if not (
+        footprint.get("official_footprint_available")
+        and footprint.get("official_geometry_receipt")
+        and footprint.get("official_selection_match")
+    ):
+        return None
+    properties = footprint.get("properties") if isinstance(footprint.get("properties"), dict) else {}
+    floor_count = _parse_loose_number(properties.get("gro_flo_co"))
+    official_height = next(
+        (
+            _parse_loose_number(properties.get(key))
+            for key in ("buld_hg", "bldg_hg", "building_height_m")
+            if _parse_loose_number(properties.get(key)) is not None
+        ),
+        None,
+    )
+    source_chain = _normalize_source_chain(footprint.get("source_chain"), "official_building_height")
+    building_name = footprint.get("display_name") or properties.get("buld_nm") or properties.get("buld_nm_dc")
+    parsed_floors = int(round(floor_count)) if floor_count is not None and floor_count > 0 else None
+    if official_height is not None and official_height > 0:
+        return {
+            "available": True,
+            "official_available": True,
+            "estimated_height_m": round(official_height, 1),
+            "estimated_floors": parsed_floors,
+            "max_possible_height_m": round(official_height, 1),
+            "zoning_type": properties.get("zoning_type"),
+            "far_percent": _parse_loose_number(properties.get("far_percent")),
+            "bcr_percent": _parse_loose_number(properties.get("bcr_percent")),
+            "confidence": 0.99,
+            "building_confidence": 0.99,
+            "method": "official_building_height",
+            "source": "official_building_height",
+            "profile_source": "official_verified",
+            "source_chain": source_chain,
+            "source_status": "official_verified",
+            "official_building_data": True,
+            "official_footprint_available": True,
+            "official_geometry_receipt": True,
+            "official_selection_match": True,
+            "display_name": building_name,
+            "height_estimated_from_official_floors": False,
+            "field_sources": {
+                "estimated_height_m": {"source": "vworld_wfs", "status": "official_verified", "property_key": "buld_hg", "value": official_height},
+                "estimated_floors": {"source": "vworld_wfs", "status": "official_verified", "property_key": "gro_flo_co", "value": parsed_floors},
+            },
+            "receipt": {
+                "kind": "official_building_height",
+                "geometry_receipt": True,
+                "selection_match": True,
+                "source_chain": source_chain,
+            },
+            "stale_cache": False,
+        }
+    if parsed_floors is None:
+        return None
+    derived_height = round(parsed_floors * 3.3, 1)
+    derived_source_chain = _normalize_source_chain(footprint.get("source_chain"), "official_floor_count_derived")
+    return {
+        "available": True,
+        "official_available": False,
+        "estimated_height_m": derived_height,
+        "estimated_floors": parsed_floors,
+        "max_possible_height_m": derived_height,
+        "zoning_type": properties.get("zoning_type"),
+        "far_percent": _parse_loose_number(properties.get("far_percent")),
+        "bcr_percent": _parse_loose_number(properties.get("bcr_percent")),
+        "confidence": 0.86,
+        "building_confidence": 0.86,
+        "method": "official_floor_count_derived",
+        "source": "official_floor_count_derived",
+        "profile_source": "official_floor_count",
+        "source_chain": derived_source_chain,
+        "source_status": "estimated",
+        "official_building_data": True,
+        "official_footprint_available": True,
+        "official_geometry_receipt": True,
+        "official_selection_match": True,
+        "display_name": building_name,
+        "height_estimated_from_official_floors": True,
+        "field_sources": {
+            "estimated_height_m": {"source": "official_floor_count_derived", "status": "estimated", "property_key": "gro_flo_co", "value": derived_height},
+            "estimated_floors": {"source": "vworld_wfs", "status": "official_verified", "property_key": "gro_flo_co", "value": parsed_floors},
+        },
+        "receipt": {
+            "kind": "official_floor_count_derived",
+            "geometry_receipt": True,
+            "selection_match": True,
+            "source_chain": derived_source_chain,
+        },
+        "stale_cache": False,
+    }
+
+
 # Building Height API
 try:
     from building_height import predict_building_height
     @app.get("/api/building-height")
-    def get_building_height(lat: float, lon: float):
-        # FIX: Use wrapper function instead of object method
+    async def get_building_height(lat: float, lon: float):
+        footprint = await lookup_building_footprint(lat, lon)
+        official_height = _build_official_building_height_evidence(footprint)
+        if official_height:
+            return official_height
         return predict_building_height(lat, lon)
 except ImportError:
     pass
 
 # Building Footprint API
 try:
-    from building_footprint import lookup_building_footprint, cache_building_footprint
+    from building_footprint import _point_in_polygon, cache_building_footprint, lookup_building_footprint, lookup_official_building_collection
 
     @app.get("/api/building-footprint")
     async def get_building_footprint(lat: float, lon: float):

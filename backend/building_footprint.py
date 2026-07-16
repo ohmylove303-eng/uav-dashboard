@@ -209,7 +209,15 @@ def _load_env_file(path: str) -> Dict[str, str]:
 
 
 def _resolve_vworld_api_key() -> Optional[str]:
-    for key_name in ("VWORLD_API_KEY", "NEXT_PUBLIC_VWORLD_API_KEY", "VITE_VWORLD_API_KEY", "VITE_VWORLD_3D_API_KEY", "VITE_VWORLD_KEY"):
+    for key_name in (
+        "VWORLD_OFFICIAL_DATA_API_KEY",
+        "VWORLD_DATA_API_KEY",
+        "VWORLD_API_KEY",
+        "NEXT_PUBLIC_VWORLD_API_KEY",
+        "VITE_VWORLD_API_KEY",
+        "VITE_VWORLD_3D_API_KEY",
+        "VITE_VWORLD_KEY",
+    ):
         value = os.getenv(key_name)
         if value:
             return value
@@ -218,7 +226,15 @@ def _resolve_vworld_api_key() -> Optional[str]:
         if not candidate:
             continue
         values = _load_env_file(candidate)
-        for key_name in ("VWORLD_API_KEY", "NEXT_PUBLIC_VWORLD_API_KEY", "VITE_VWORLD_API_KEY", "VITE_VWORLD_3D_API_KEY", "VITE_VWORLD_KEY"):
+        for key_name in (
+            "VWORLD_OFFICIAL_DATA_API_KEY",
+            "VWORLD_DATA_API_KEY",
+            "VWORLD_API_KEY",
+            "NEXT_PUBLIC_VWORLD_API_KEY",
+            "VITE_VWORLD_API_KEY",
+            "VITE_VWORLD_3D_API_KEY",
+            "VITE_VWORLD_KEY",
+        ):
             value = values.get(key_name)
             if value:
                 return value
@@ -950,12 +966,91 @@ def _lookup_osm_fallback_sync(lat: float, lon: float, radius_m: float = 60.0) ->
     }, source_chain=["osm_fallback"], profile_source="fallback", source_origin="osm_fallback")
 
 
+async def lookup_official_building_collection(
+    lat: float,
+    lon: float,
+    radius_m: float = 180.0,
+    max_features: int = 100,
+) -> Dict[str, Any]:
+    api_key = _resolve_vworld_api_key()
+    if not api_key:
+        return {
+            "available": False,
+            "official_available": False,
+            "features": [],
+            "source": "vworld_wfs",
+            "source_chain": ["vworld_wfs"],
+            "reason": "missing_vworld_data_api_key",
+        }
+
+    preferred_type_name = os.getenv("VWORLD_WFS_TYPENAME")
+    try:
+        type_name = preferred_type_name or DEFAULT_VWORLD_TYPENAME
+        payload_text = await asyncio.to_thread(
+            _fetch_text_with_retries_sync,
+            {
+                "SERVICE": "WFS",
+                "REQUEST": "GetFeature",
+                "VERSION": "1.1.0",
+                "key": api_key,
+                "typeName": type_name,
+                "maxFeatures": str(max(25, min(max_features, 200))),
+                "srsName": "EPSG:4326",
+                "outputFormat": "application/json",
+                "bbox": _format_bbox_for_wfs(_build_bbox(lat, lon, radius_m=radius_m)),
+            },
+        )
+        payload = json.loads(payload_text)
+    except Exception:
+        return {
+            "available": False,
+            "official_available": False,
+            "features": [],
+            "source": "vworld_wfs",
+            "source_chain": ["vworld_wfs"],
+            "reason": "official_building_collection_request_failed",
+        }
+
+    raw_features = payload.get("features") if isinstance(payload, dict) else []
+    features: List[Dict[str, Any]] = []
+    for index, feature in enumerate(raw_features if isinstance(raw_features, list) else []):
+        if not isinstance(feature, dict):
+            continue
+        ring = _get_polygon_ring(feature)
+        if not ring or len(ring) < 4:
+            continue
+        properties = _sanitize_properties(feature.get("properties"))
+        feature_id = next(
+            (
+                properties.get(key)
+                for key in ("bd_mgt_sn", "pk", "bld_mgt_sn", "id", "fid")
+                if _is_meaningful_value(properties.get(key))
+            ),
+            feature.get("id") or f"vworld-building-{index}",
+        )
+        features.append({
+            "id": str(feature_id),
+            "name": _extract_display_name(properties),
+            "ring": ring,
+            "properties": properties,
+        })
+
+    return {
+        "available": bool(features),
+        "official_available": bool(features),
+        "features": features,
+        "source": "vworld_wfs",
+        "source_chain": ["vworld_wfs", "official_building_collection"],
+        "typeName": type_name,
+        "reason": None if features else "official_building_collection_empty",
+    }
+
+
 async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
     api_key = _resolve_vworld_api_key()
     preferred_type_name = os.getenv("VWORLD_WFS_TYPENAME")
 
     cached_match = _match_cached_footprint(lat, lon)
-    osm_fallback = await asyncio.to_thread(_lookup_osm_fallback_sync, lat, lon)
     if cached_match and "source_status" not in cached_match:
         cached_match = _annotate_footprint_result(
             cached_match,
@@ -963,27 +1058,35 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
             profile_source=cached_match.get("profile_source") or "cache",
             source_origin=cached_match.get("source_origin") or cached_match.get("raw_source") or cached_match.get("source"),
         )
-    if osm_fallback and "source_status" not in osm_fallback:
-        osm_fallback = _annotate_footprint_result(
-            osm_fallback,
-            source_chain=osm_fallback.get("source_chain") or ["osm_fallback"],
-            profile_source=osm_fallback.get("profile_source") or "fallback",
-            source_origin=osm_fallback.get("source_origin") or osm_fallback.get("raw_source") or osm_fallback.get("source"),
-        )
-    if osm_fallback and osm_fallback.get("available"):
-        try:
-            _store_footprint_cache_entry(
-                lat,
-                lon,
-                osm_fallback.get("geometry") or [],
-                properties=osm_fallback.get("properties"),
-                source="osm_fallback",
+    osm_fallback: Optional[Dict[str, Any]] = None
+
+    async def get_osm_fallback() -> Optional[Dict[str, Any]]:
+        nonlocal osm_fallback
+        if osm_fallback is not None:
+            return osm_fallback
+        osm_fallback = await asyncio.to_thread(_lookup_osm_fallback_sync, lat, lon)
+        if osm_fallback and "source_status" not in osm_fallback:
+            osm_fallback = _annotate_footprint_result(
+                osm_fallback,
+                source_chain=osm_fallback.get("source_chain") or ["osm_fallback"],
+                profile_source=osm_fallback.get("profile_source") or "fallback",
+                source_origin=osm_fallback.get("source_origin") or osm_fallback.get("raw_source") or osm_fallback.get("source"),
             )
-        except Exception:
-            pass
+        if osm_fallback and osm_fallback.get("available"):
+            try:
+                _store_footprint_cache_entry(
+                    lat,
+                    lon,
+                    osm_fallback.get("geometry") or [],
+                    properties=osm_fallback.get("properties"),
+                    source="osm_fallback",
+                )
+            except Exception:
+                pass
+        return osm_fallback
 
     if not api_key:
-        return cached_match or osm_fallback or _annotate_footprint_result({
+        return cached_match or await get_osm_fallback() or _annotate_footprint_result({
             "available": False,
             "source": "vworld_wfs",
             "reason": "missing_vworld_api_key",
@@ -991,19 +1094,6 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
 
     try:
         type_name = preferred_type_name or DEFAULT_VWORLD_TYPENAME
-
-        if not preferred_type_name:
-            capabilities_text = await asyncio.to_thread(
-                _fetch_text_with_retries_sync,
-                {
-                    "SERVICE": "WFS",
-                    "REQUEST": "GetCapabilities",
-                    "VERSION": "1.1.0",
-                    "key": api_key,
-                },
-            )
-            type_names = _parse_type_names_from_capabilities(capabilities_text)
-            type_name = _choose_type_name(type_names) or DEFAULT_VWORLD_TYPENAME
 
         if not type_name:
             return _annotate_footprint_result({
@@ -1046,7 +1136,7 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
             if isinstance(feature, dict) and (_get_polygon_ring(feature) or [])
         ]
         if not polygon_features:
-            return cached_match or osm_fallback or _annotate_footprint_result({
+            return cached_match or await get_osm_fallback() or _annotate_footprint_result({
                 "available": False,
                 "source": "vworld_wfs",
                 "typeName": type_name,
@@ -1056,7 +1146,7 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
         nearest = min(polygon_features, key=lambda feature: _distance_to_point(feature, lat, lon))
         geometry = _get_polygon_ring(nearest)
         if not geometry or len(geometry) < 4:
-            return cached_match or osm_fallback or _annotate_footprint_result({
+            return cached_match or await get_osm_fallback() or _annotate_footprint_result({
                 "available": False,
                 "source": "vworld_wfs",
                 "typeName": type_name,
@@ -1088,6 +1178,8 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
             "geometry": geometry,
             "properties": result_properties,
             "field_sources": cached_field_sources,
+            "official_geometry_receipt": True,
+            "official_selection_match": _point_in_polygon(lon, lat, geometry),
         }, source_chain=source_chain, profile_source="wfs", source_origin="vworld_wfs")
         display_name = _extract_display_name(result_properties)
         if display_name:
@@ -1110,14 +1202,14 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
             detail = error.read().decode("utf-8", "replace")[:400]
         except Exception:
             detail = str(error)
-        return cached_match or osm_fallback or _annotate_footprint_result({
+        return cached_match or await get_osm_fallback() or _annotate_footprint_result({
             "available": False,
             "source": "vworld_wfs",
             "reason": "feature_request_failed",
             "detail": detail,
         }, source_chain=["vworld_wfs"], profile_source="wfs", source_origin="vworld_wfs")
     except Exception as error:
-        return cached_match or osm_fallback or _annotate_footprint_result({
+        return cached_match or await get_osm_fallback() or _annotate_footprint_result({
             "available": False,
             "source": "vworld_wfs",
             "reason": "unexpected_error",

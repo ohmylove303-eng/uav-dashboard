@@ -107,7 +107,7 @@ class DataPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.input_quality["status"], "hold")
         self.assertCountEqual(
             response.input_quality["missing_prerequisites"],
-            ["building", "road_width", "weather"],
+            ["building", "canyon_width", "weather"],
         )
         self.assertIsNone(response.urban_factors["Fcanyon"])
         self.assertIsNone(response.urban_factors["Fcanyon_raw"])
