@@ -3,7 +3,7 @@
 4중 게이트 시스템 + 실시간 기상 연동 + 기종별 맞춤 판정
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
@@ -17,6 +17,7 @@ import os
 import json
 import math
 import re
+import secrets
 import time
 from urban_canyon import measure_facade_gap
 
@@ -141,6 +142,13 @@ VWORLD_ROAD_QUERY_RADII_M = (180, 500, 1500)
 VWORLD_REQUEST_TIMEOUT_S = float(os.getenv("VWORLD_REQUEST_TIMEOUT_S", "5.0"))
 CANYON_EVIDENCE_CACHE_TTL_S = float(os.getenv("CANYON_EVIDENCE_CACHE_TTL_S", "300"))
 CANYON_EVIDENCE_CACHE: Dict[str, Dict[str, Any]] = {}
+# Full server-side endpoint of the fixed-egress official GIS bridge. This is
+# intentionally not part of runtime-config.js or any browser payload.
+OFFICIAL_GIS_BRIDGE_URL = (os.getenv("OFFICIAL_GIS_BRIDGE_URL") or "").strip()
+OFFICIAL_GIS_BRIDGE_TOKEN = (os.getenv("OFFICIAL_GIS_BRIDGE_TOKEN") or "").strip()
+OFFICIAL_GIS_BRIDGE_TIMEOUT_S = float(os.getenv("OFFICIAL_GIS_BRIDGE_TIMEOUT_S", "6.0"))
+# Set only on the dedicated bridge deployment. The primary API keeps this empty.
+OFFICIAL_GIS_BRIDGE_INBOUND_TOKEN = (os.getenv("OFFICIAL_GIS_BRIDGE_INBOUND_TOKEN") or "").strip()
 AUTHORITATIVE_WEATHER_SOURCE_TOKENS = (
     "kma_surface_observation",
     "kma_surface_forecast",
@@ -956,11 +964,79 @@ def _select_target_building_from_collection(
     }
 
 
+def _bridge_canyon_evidence_is_verified(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    receipt = payload.get("receipt")
+    facade_gap_m = _parse_loose_number(payload.get("facade_gap_m"))
+    source_chain = _normalize_source_chain(payload.get("source_chain"), payload.get("source"))
+    return bool(
+        payload.get("available")
+        and payload.get("official_available")
+        and payload.get("source") == "official_canyon_width"
+        and facade_gap_m is not None
+        and facade_gap_m > 0
+        and isinstance(receipt, dict)
+        and receipt.get("kind") == "official_canyon_width"
+        and receipt.get("target_geometry_receipt")
+        and receipt.get("opposing_geometry_receipt")
+        and receipt.get("road_geometry_receipt")
+        and receipt.get("road_crossing_verified")
+        and any(token in {"vworld_wfs", "official_building_collection"} for token in source_chain)
+    )
+
+
+def _with_official_gis_bridge_provenance(payload: Dict[str, Any]) -> Dict[str, Any]:
+    source_chain = _normalize_source_chain(payload.get("source_chain"), "official_gis_bridge", "official_canyon_width")
+    receipt = dict(payload["receipt"])
+    receipt["source_chain"] = source_chain
+    result = dict(payload)
+    result["source_chain"] = source_chain
+    result["receipt"] = receipt
+    result["bridge_provider"] = "official_gis_bridge"
+    return result
+
+
+async def fetch_official_gis_bridge_canyon_evidence(
+    lat: float,
+    lon: float,
+    road_name: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    if not OFFICIAL_GIS_BRIDGE_URL or not OFFICIAL_GIS_BRIDGE_TOKEN:
+        return None
+
+    params: Dict[str, Any] = {"lat": lat, "lon": lon}
+    if road_name:
+        params["road_name"] = road_name
+
+    try:
+        async with httpx.AsyncClient(timeout=OFFICIAL_GIS_BRIDGE_TIMEOUT_S) as client:
+            response = await client.get(
+                OFFICIAL_GIS_BRIDGE_URL,
+                params=params,
+                headers={"Authorization": f"Bearer {OFFICIAL_GIS_BRIDGE_TOKEN}"},
+            )
+        if response.status_code != 200:
+            return None
+        payload = response.json()
+    except (httpx.HTTPError, ValueError):
+        return None
+
+    if not _bridge_canyon_evidence_is_verified(payload):
+        return None
+
+    return _with_official_gis_bridge_provenance(payload)
+
+
 async def fetch_canyon_width_evidence(lat: float, lon: float, road_name: Optional[str] = None) -> Dict[str, Any]:
     cache_key = _canyon_cache_key(lat, lon, road_name)
     cached_evidence = _cache_get(CANYON_EVIDENCE_CACHE, cache_key, CANYON_EVIDENCE_CACHE_TTL_S)
     if cached_evidence:
         return cached_evidence
+
+    bridge_evidence = await fetch_official_gis_bridge_canyon_evidence(lat, lon, road_name=road_name)
+    if _bridge_canyon_evidence_is_verified(bridge_evidence):
+        return _cache_set(CANYON_EVIDENCE_CACHE, cache_key, _with_official_gis_bridge_provenance(bridge_evidence))
 
     road_evidence, collection = await asyncio.gather(
         fetch_road_width_evidence(lat, lon, road_name=road_name),
@@ -1791,7 +1867,16 @@ async def get_road_width_api(lat: float, lon: float, road_name: Optional[str] = 
 
 
 @app.get("/api/canyon-width")
-async def get_canyon_width_api(lat: float, lon: float, road_name: Optional[str] = None):
+async def get_canyon_width_api(
+    lat: float,
+    lon: float,
+    road_name: Optional[str] = None,
+    authorization: Optional[str] = Header(default=None),
+):
+    if OFFICIAL_GIS_BRIDGE_INBOUND_TOKEN:
+        expected = f"Bearer {OFFICIAL_GIS_BRIDGE_INBOUND_TOKEN}"
+        if not authorization or not secrets.compare_digest(authorization, expected):
+            raise HTTPException(status_code=401, detail="official GIS bridge authorization required")
     return await fetch_canyon_width_evidence(lat, lon, road_name=road_name)
 
 @app.get("/api/weather")

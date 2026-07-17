@@ -83,6 +83,84 @@ class CanyonWidthRouteTests(unittest.TestCase):
         self.assertEqual(payload["receipt"]["kind"], "official_canyon_width")
         self.assertTrue(payload["receipt"]["road_crossing_verified"])
 
+    def test_route_uses_only_a_fully_receipted_official_gis_bridge_result(self):
+        bridge_result = {
+            "available": True,
+            "official_available": True,
+            "facade_gap_m": 27.0,
+            "effective_canyon_width_m": 27.0,
+            "official_road_right_of_way_width_m": 49.7,
+            "source": "official_canyon_width",
+            "source_chain": ["vworld_wfs", "official_building_collection", "official_canyon_width"],
+            "receipt": {
+                "kind": "official_canyon_width",
+                "target_geometry_receipt": True,
+                "opposing_geometry_receipt": True,
+                "road_geometry_receipt": True,
+                "road_crossing_verified": True,
+            },
+        }
+        with (
+            patch.object(main, "fetch_official_gis_bridge_canyon_evidence", AsyncMock(return_value=bridge_result)),
+            patch.object(main, "fetch_road_width_evidence", AsyncMock(side_effect=AssertionError("verified bridge result must avoid duplicate road lookup"))),
+            patch.object(main, "lookup_official_building_collection", AsyncMock(side_effect=AssertionError("verified bridge result must avoid duplicate building lookup"))),
+        ):
+            response = self.client.get("/api/canyon-width", params={"lat": self.target_lat, "lon": self.target_lon})
+
+        payload = response.json()
+        self.assertTrue(payload["official_available"])
+        self.assertEqual(payload["facade_gap_m"], 27.0)
+        self.assertEqual(payload["official_road_right_of_way_width_m"], 49.7)
+        self.assertIn("official_gis_bridge", payload["source_chain"])
+
+    def test_route_rejects_an_incomplete_bridge_receipt_and_uses_direct_evidence(self):
+        collection = {
+            "available": True,
+            "official_available": True,
+            "source_chain": ["vworld_wfs"],
+            "features": [
+                {"id": "target", "name": "대상건물", "ring": self.target_ring},
+                {"id": "opposite-side", "name": "맞은편", "ring": self.opposing_ring},
+            ],
+        }
+        incomplete_bridge_result = {
+            "available": True,
+            "official_available": True,
+            "facade_gap_m": 49.7,
+            "source": "official_canyon_width",
+            "source_chain": ["vworld_wfs"],
+            "receipt": {
+                "kind": "official_canyon_width",
+                "target_geometry_receipt": True,
+                "opposing_geometry_receipt": False,
+                "road_geometry_receipt": True,
+                "road_crossing_verified": True,
+            },
+        }
+        with (
+            patch.object(main, "fetch_official_gis_bridge_canyon_evidence", AsyncMock(return_value=incomplete_bridge_result)),
+            patch.object(main, "fetch_road_width_evidence", AsyncMock(return_value=self.road)),
+            patch.object(main, "lookup_official_building_collection", AsyncMock(return_value=collection)),
+        ):
+            response = self.client.get("/api/canyon-width", params={"lat": self.target_lat, "lon": self.target_lon})
+
+        payload = response.json()
+        self.assertEqual(payload["facade_gap_m"], 27.0)
+        self.assertNotEqual(payload["facade_gap_m"], incomplete_bridge_result["facade_gap_m"])
+
+    def test_dedicated_bridge_requires_its_server_only_token(self):
+        with patch.object(main, "OFFICIAL_GIS_BRIDGE_INBOUND_TOKEN", "bridge-secret"):
+            denied = self.client.get("/api/canyon-width", params={"lat": self.target_lat, "lon": self.target_lon})
+            with patch.object(main, "fetch_canyon_width_evidence", AsyncMock(return_value={"available": False})):
+                accepted = self.client.get(
+                    "/api/canyon-width",
+                    params={"lat": self.target_lat, "lon": self.target_lon},
+                    headers={"Authorization": "Bearer bridge-secret"},
+                )
+
+        self.assertEqual(denied.status_code, 401)
+        self.assertEqual(accepted.status_code, 200)
+
     def test_route_holds_when_an_opposing_official_footprint_is_not_found(self):
         collection = {
             "available": True,
