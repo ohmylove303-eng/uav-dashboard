@@ -997,6 +997,36 @@ def _with_official_gis_bridge_provenance(payload: Dict[str, Any]) -> Dict[str, A
     return result
 
 
+def _bridge_canyon_evidence_is_explicitly_unavailable(payload: Any) -> bool:
+    """Accept an authenticated bridge HOLD receipt without replacing it with estimates."""
+    if not isinstance(payload, dict):
+        return False
+    receipt = payload.get("receipt")
+    return bool(
+        payload.get("available") is False
+        and payload.get("official_available") is False
+        and payload.get("source") == "official_canyon_width_unavailable"
+        and payload.get("reason")
+        and isinstance(receipt, dict)
+        and receipt.get("kind") == "official_canyon_width_unavailable"
+    )
+
+
+def _with_official_gis_bridge_unavailable_provenance(payload: Dict[str, Any]) -> Dict[str, Any]:
+    source_chain = _normalize_source_chain(
+        payload.get("source_chain"),
+        "official_gis_bridge",
+        "official_canyon_width_unavailable",
+    )
+    receipt = dict(payload.get("receipt") or {})
+    receipt["source_chain"] = source_chain
+    result = dict(payload)
+    result["source_chain"] = source_chain
+    result["receipt"] = receipt
+    result["bridge_provider"] = "official_gis_bridge"
+    return result
+
+
 async def fetch_official_gis_bridge_canyon_evidence(
     lat: float,
     lon: float,
@@ -1022,10 +1052,10 @@ async def fetch_official_gis_bridge_canyon_evidence(
     except (httpx.HTTPError, ValueError):
         return None
 
-    if not _bridge_canyon_evidence_is_verified(payload):
+    if not isinstance(payload, dict):
         return None
 
-    return _with_official_gis_bridge_provenance(payload)
+    return payload
 
 
 async def fetch_canyon_width_evidence(lat: float, lon: float, road_name: Optional[str] = None) -> Dict[str, Any]:
@@ -1037,6 +1067,8 @@ async def fetch_canyon_width_evidence(lat: float, lon: float, road_name: Optiona
     bridge_evidence = await fetch_official_gis_bridge_canyon_evidence(lat, lon, road_name=road_name)
     if _bridge_canyon_evidence_is_verified(bridge_evidence):
         return _cache_set(CANYON_EVIDENCE_CACHE, cache_key, _with_official_gis_bridge_provenance(bridge_evidence))
+    if _bridge_canyon_evidence_is_explicitly_unavailable(bridge_evidence):
+        return _with_official_gis_bridge_unavailable_provenance(bridge_evidence)
 
     road_evidence, collection = await asyncio.gather(
         fetch_road_width_evidence(lat, lon, road_name=road_name),

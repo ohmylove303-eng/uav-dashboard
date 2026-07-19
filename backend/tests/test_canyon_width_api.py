@@ -148,6 +148,36 @@ class CanyonWidthRouteTests(unittest.TestCase):
         self.assertEqual(payload["facade_gap_m"], 27.0)
         self.assertNotEqual(payload["facade_gap_m"], incomplete_bridge_result["facade_gap_m"])
 
+    def test_route_returns_an_explicit_bridge_hold_without_slow_local_fallback(self):
+        bridge_hold = {
+            "available": False,
+            "official_available": False,
+            "facade_gap_m": None,
+            "source": "official_canyon_width_unavailable",
+            "source_chain": ["vworld_wfs", "official_canyon_width_unavailable"],
+            "reason": "building_upstream_status_502",
+            "receipt": {
+                "kind": "official_canyon_width_unavailable",
+                "target_geometry_receipt": False,
+                "opposing_geometry_receipt": False,
+                "road_geometry_receipt": False,
+                "road_crossing_verified": False,
+            },
+        }
+        with (
+            patch.object(main, "fetch_official_gis_bridge_canyon_evidence", AsyncMock(return_value=bridge_hold)),
+            patch.object(main, "fetch_road_width_evidence", AsyncMock(side_effect=AssertionError("explicit bridge HOLD must not fall through"))),
+            patch.object(main, "lookup_official_building_collection", AsyncMock(side_effect=AssertionError("explicit bridge HOLD must not fall through"))),
+        ):
+            response = self.client.get("/api/canyon-width", params={"lat": self.target_lat, "lon": self.target_lon})
+
+        payload = response.json()
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(payload["official_available"])
+        self.assertIsNone(payload["facade_gap_m"])
+        self.assertEqual(payload["reason"], "building_upstream_status_502")
+        self.assertIn("official_gis_bridge", payload["source_chain"])
+
     def test_dedicated_bridge_requires_its_server_only_token(self):
         with patch.object(main, "OFFICIAL_GIS_BRIDGE_INBOUND_TOKEN", "bridge-secret"):
             denied = self.client.get("/api/canyon-width", params={"lat": self.target_lat, "lon": self.target_lon})
