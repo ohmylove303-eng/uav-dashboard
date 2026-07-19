@@ -36,6 +36,7 @@ class OfficialBuildingMapWfsTests(unittest.TestCase):
         self.assertEqual(captured["params"]["TYPENAME"], "lt_c_spbd")
         self.assertEqual(captured["params"]["SRSNAME"], "EPSG:3857")
         self.assertEqual(captured["params"]["APIKEY"], "server-only-key")
+        self.assertIn("DOMAIN", captured["params"])
         self.assertEqual(captured["kwargs"]["endpoint"], building_footprint.VWORLD_MAP_WFS_ENDPOINT)
         ring = result["features"][0]["ring"]
         self.assertTrue(all(120.0 < point[0] < 130.0 and 30.0 < point[1] < 40.0 for point in ring))
@@ -84,6 +85,7 @@ class OfficialBuildingClickTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["display_name"], "Official Click Building")
         self.assertEqual(result["source_origin"], "vworld_map_wfs")
         self.assertEqual(captured["params"]["SRSNAME"], "EPSG:3857")
+        self.assertIn("DOMAIN", captured["params"])
         self.assertEqual(captured["kwargs"]["endpoint"], building_footprint.VWORLD_MAP_WFS_ENDPOINT)
 
     async def test_road_click_does_not_become_the_nearest_building(self):

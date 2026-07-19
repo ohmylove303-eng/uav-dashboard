@@ -71,7 +71,7 @@ test("uses the Map WFS building collection in EPSG:3857 instead of the unavailab
   assert.equal(buildingUrl?.pathname, "/js/wfs.do");
   assert.equal(buildingUrl?.searchParams.get("SRSNAME"), "EPSG:3857");
   assert.equal(buildingUrl?.searchParams.get("APIKEY"), "vworld-server-only-key");
-  assert.equal(buildingUrl?.searchParams.has("DOMAIN"), false);
+  assert.equal(buildingUrl?.searchParams.get("DOMAIN"), env.VWORLD_REFERER);
 });
 
 const env = {

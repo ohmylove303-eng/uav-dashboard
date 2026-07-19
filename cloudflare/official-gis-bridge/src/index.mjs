@@ -192,7 +192,7 @@ function buildingRequest(lat, lon, env) {
   url.search = new URLSearchParams({
     SERVICE: "WFS", REQUEST: "GetFeature", VERSION: "1.1.0", TYPENAME: env.VWORLD_WFS_TYPENAME || BUILDING_LAYER,
     MAXFEATURES: "100", SRSNAME: "EPSG:3857", OUTPUT: "application/json", EXCEPTIONS: "text/xml",
-    BBOX: roadBbox(lat, lon, 180), APIKEY: env.VWORLD_DATA_API_KEY,
+    BBOX: roadBbox(lat, lon, 180), APIKEY: env.VWORLD_DATA_API_KEY, DOMAIN: env.VWORLD_REFERER,
   }).toString();
   return url;
 }

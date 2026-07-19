@@ -1037,6 +1037,7 @@ async def lookup_official_building_collection(
                 "EXCEPTIONS": "text/xml",
                 "BBOX": _build_mercator_bbox(lat, lon, radius_m=radius_m),
                 "APIKEY": api_key,
+                "DOMAIN": os.getenv("VWORLD_REFERER", DEFAULT_VWORLD_REFERER),
             },
             endpoint=VWORLD_MAP_WFS_ENDPOINT,
         )
