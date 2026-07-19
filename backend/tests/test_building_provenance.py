@@ -92,16 +92,19 @@ class BuildingFootprintProvenanceTests(unittest.IsolatedAsyncioTestCase):
             "source": "vworld_wfs",
             "source_origin": "frontend_context_seed",
         }
+        southwest = building_footprint._lonlat_to_web_mercator(126.9778, 37.5663)
+        northeast = building_footprint._lonlat_to_web_mercator(126.9787, 37.5672)
         feature_payload = {
             "features": [
                 {
                     "geometry": {
                         "type": "Polygon",
                         "coordinates": [[
-                            [126.9780, 37.5665],
-                            [126.9786, 37.5665],
-                            [126.9786, 37.5671],
-                            [126.9780, 37.5665],
+                            list(southwest),
+                            [northeast[0], southwest[1]],
+                            list(northeast),
+                            [southwest[0], northeast[1]],
+                            list(southwest),
                         ]],
                     },
                     "properties": {

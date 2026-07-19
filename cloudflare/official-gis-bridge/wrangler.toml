@@ -1,0 +1,4 @@
+name = "uav-official-gis-bridge"
+main = "src/index.mjs"
+compatibility_date = "2026-07-18"
+workers_dev = true
