@@ -1,6 +1,7 @@
 import { measureFacadeGap } from "./geometry.mjs";
 
 const MAP_WFS_ENDPOINT = "https://map.vworld.kr/js/wfs.do";
+const API_WFS_ENDPOINT = "https://api.vworld.kr/req/wfs";
 const BUILDING_LAYER = "lt_c_spbd";
 const ROAD_LAYER = "lt_l_n3a0020000";
 
@@ -187,36 +188,65 @@ async function fetchJson(fetchImpl, url, referer, source) {
   }
 }
 
-function buildingRequest(lat, lon, env) {
-  const url = new URL(MAP_WFS_ENDPOINT);
-  url.search = new URLSearchParams({
-    SERVICE: "WFS", REQUEST: "GetFeature", VERSION: "1.1.0", TYPENAME: env.VWORLD_WFS_TYPENAME || BUILDING_LAYER,
-    MAXFEATURES: "100", SRSNAME: "EPSG:3857", OUTPUT: "application/json", EXCEPTIONS: "text/xml",
-    BBOX: roadBbox(lat, lon, 180), APIKEY: env.VWORLD_DATA_API_KEY, DOMAIN: env.VWORLD_REFERER,
-  }).toString();
-  return url;
+function wfsRequests({ typeName, maxFeatures, bbox, propertyName, env }) {
+  const common = {
+    SERVICE: "WFS", REQUEST: "GetFeature", VERSION: "1.1.0", TYPENAME: typeName,
+    MAXFEATURES: maxFeatures, SRSNAME: "EPSG:3857", OUTPUT: "application/json", EXCEPTIONS: "text/xml", BBOX: bbox,
+  };
+  if (propertyName) common.PROPERTYNAME = propertyName;
+  const mapUrl = new URL(MAP_WFS_ENDPOINT);
+  mapUrl.search = new URLSearchParams({ ...common, APIKEY: env.VWORLD_DATA_API_KEY, DOMAIN: env.VWORLD_REFERER }).toString();
+  const apiUrl = new URL(API_WFS_ENDPOINT);
+  apiUrl.search = new URLSearchParams({ ...common, key: env.VWORLD_DATA_API_KEY }).toString();
+  return [
+    { url: mapUrl, sourceOrigin: "vworld_map_wfs" },
+    { url: apiUrl, sourceOrigin: "vworld_api_wfs" },
+  ];
 }
 
-function roadRequest(lat, lon, env) {
-  const url = new URL(MAP_WFS_ENDPOINT);
-  url.search = new URLSearchParams({
-    SERVICE: "WFS", REQUEST: "GetFeature", VERSION: "1.1.0", TYPENAME: ROAD_LAYER, MAXFEATURES: "80",
-    SRSNAME: "EPSG:3857", OUTPUT: "application/json", EXCEPTIONS: "text/xml", PROPERTYNAME: "rvwd,rdln,rdnm,ag_geom",
-    BBOX: roadBbox(lat, lon), APIKEY: env.VWORLD_DATA_API_KEY, DOMAIN: env.VWORLD_REFERER,
-  }).toString();
-  return url;
+function buildingRequests(lat, lon, env) {
+  return wfsRequests({
+    typeName: env.VWORLD_WFS_TYPENAME || BUILDING_LAYER,
+    maxFeatures: "100",
+    bbox: roadBbox(lat, lon, 180),
+    env,
+  });
+}
+
+function roadRequests(lat, lon, env) {
+  return wfsRequests({
+    typeName: ROAD_LAYER,
+    maxFeatures: "80",
+    bbox: roadBbox(lat, lon),
+    propertyName: "rvwd,rdln,rdnm,ag_geom",
+    env,
+  });
+}
+
+async function fetchOfficialWfsJson(fetchImpl, requests, referer, source) {
+  let lastError;
+  for (const request of requests) {
+    try {
+      return { payload: await fetchJson(fetchImpl, request.url, referer, source), sourceOrigin: request.sourceOrigin };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError ?? new Error(`${source}_upstream_unavailable`);
 }
 
 async function canyonEvidence(lat, lon, roadNameValue, env, fetchImpl) {
   if (!env.VWORLD_DATA_API_KEY || !env.VWORLD_REFERER) return unavailable("missing_vworld_data_api_key");
-  let buildingPayload;
-  let roadPayload;
+  let buildingResult;
+  let roadResult;
   try {
-    buildingPayload = await fetchJson(fetchImpl, buildingRequest(lat, lon, env), env.VWORLD_REFERER, "building");
-    roadPayload = await fetchJson(fetchImpl, roadRequest(lat, lon, env), env.VWORLD_REFERER, "road");
+    buildingResult = await fetchOfficialWfsJson(fetchImpl, buildingRequests(lat, lon, env), env.VWORLD_REFERER, "building");
+    roadResult = await fetchOfficialWfsJson(fetchImpl, roadRequests(lat, lon, env), env.VWORLD_REFERER, "road");
   } catch (error) {
     return unavailable(error instanceof Error ? error.message : "upstream_request_failed");
   }
+  const buildingPayload = buildingResult.payload;
+  const roadPayload = roadResult.payload;
   const buildings = extractBuildings(buildingPayload);
   const clickPoint = lonLatToMercator(lon, lat);
   const targetMatches = buildings.filter((building) => pointInRing(clickPoint[0], clickPoint[1], building.ring));
@@ -227,7 +257,7 @@ async function canyonEvidence(lat, lon, roadNameValue, env, fetchImpl) {
   if (!road) return unavailable("official_road_geometry_not_matched", null, targetReceipt);
   const measurement = measureFacadeGap({ targetRing: target.ring, roadPath: road.paths[0], buildings: buildings.filter((building) => building.id !== target.id) });
   if (!measurement.available) return unavailable(measurement.reason, road, targetReceipt);
-  const sourceChain = ["vworld_wfs", "official_building_collection", "official_road_right_of_way", ROAD_LAYER, "official_canyon_width"];
+  const sourceChain = ["vworld_wfs", buildingResult.sourceOrigin, roadResult.sourceOrigin, "official_building_collection", "official_road_right_of_way", ROAD_LAYER, "official_canyon_width"];
   return {
     available: true,
     official_available: true,

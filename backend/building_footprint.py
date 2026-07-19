@@ -781,6 +781,71 @@ def _fetch_text_with_retries_sync(
     raise RuntimeError("footprint_fetch_failed")
 
 
+def _fetch_official_building_collection_payload_sync(
+    api_key: str,
+    type_name: str,
+    bbox: str,
+    max_features: int,
+) -> Tuple[Dict[str, Any], str]:
+    """Fetch the official building collection through VWorld's two WFS contracts."""
+    map_params = {
+        "SERVICE": "WFS",
+        "REQUEST": "GetFeature",
+        "VERSION": "1.1.0",
+        "TYPENAME": type_name,
+        "MAXFEATURES": str(max_features),
+        "SRSNAME": "EPSG:3857",
+        "OUTPUT": "application/json",
+        "EXCEPTIONS": "text/xml",
+        "BBOX": bbox,
+        "APIKEY": api_key,
+        "DOMAIN": os.getenv("VWORLD_REFERER", DEFAULT_VWORLD_REFERER),
+    }
+    api_params = {
+        "SERVICE": "WFS",
+        "REQUEST": "GetFeature",
+        "VERSION": "1.1.0",
+        "TYPENAME": type_name,
+        "MAXFEATURES": str(max_features),
+        "SRSNAME": "EPSG:3857",
+        "OUTPUT": "application/json",
+        "EXCEPTIONS": "text/xml",
+        "BBOX": bbox,
+        "key": api_key,
+    }
+    attempts = (
+        (VWORLD_MAP_WFS_ENDPOINT, map_params, "vworld_map_wfs"),
+        (VWORLD_WFS_ENDPOINT, api_params, "vworld_api_wfs"),
+    )
+    last_error: Optional[Exception] = None
+    for endpoint, params, source_origin in attempts:
+        try:
+            payload_text = _fetch_text_with_retries_sync(
+                params,
+                timeout_s=10.0,
+                retries=1,
+                endpoint=endpoint,
+            )
+            payload = json.loads(payload_text)
+            if isinstance(payload, dict) and isinstance(payload.get("features"), list):
+                return payload, source_origin
+            last_error = ValueError("official_building_collection_not_geojson")
+        except (
+            urllib.error.HTTPError,
+            urllib.error.URLError,
+            http.client.RemoteDisconnected,
+            ConnectionResetError,
+            socket.timeout,
+            json.JSONDecodeError,
+            RuntimeError,
+        ) as error:
+            last_error = error
+
+    if last_error:
+        raise RuntimeError("official_building_collection_request_failed") from last_error
+    raise RuntimeError("official_building_collection_request_failed")
+
+
 def _load_footprint_cache() -> List[Dict[str, Any]]:
     try:
         with open(FOOTPRINT_CACHE_PATH, "r", encoding="utf-8") as fp:
@@ -1024,25 +1089,14 @@ async def lookup_official_building_collection(
     preferred_type_name = os.getenv("VWORLD_WFS_TYPENAME")
     try:
         type_name = preferred_type_name or DEFAULT_VWORLD_TYPENAME
-        payload_text = await asyncio.to_thread(
-            _fetch_text_with_retries_sync,
-            {
-                "SERVICE": "WFS",
-                "REQUEST": "GetFeature",
-                "VERSION": "1.1.0",
-                "TYPENAME": type_name,
-                "MAXFEATURES": str(max(25, min(max_features, 200))),
-                "SRSNAME": "EPSG:3857",
-                "OUTPUT": "application/json",
-                "EXCEPTIONS": "text/xml",
-                "BBOX": _build_mercator_bbox(lat, lon, radius_m=radius_m),
-                "APIKEY": api_key,
-                "DOMAIN": os.getenv("VWORLD_REFERER", DEFAULT_VWORLD_REFERER),
-            },
-            endpoint=VWORLD_MAP_WFS_ENDPOINT,
+        payload, source_origin = await asyncio.to_thread(
+            _fetch_official_building_collection_payload_sync,
+            api_key,
+            type_name,
+            _build_mercator_bbox(lat, lon, radius_m=radius_m),
+            max(25, min(max_features, 200)),
         )
-        payload = json.loads(payload_text)
-    except Exception:
+    except RuntimeError:
         return {
             "available": False,
             "official_available": False,
@@ -1084,7 +1138,8 @@ async def lookup_official_building_collection(
         "official_available": bool(features),
         "features": features,
         "source": "vworld_wfs",
-        "source_chain": ["vworld_wfs", "vworld_map_wfs", "official_building_collection"],
+        "source_origin": source_origin,
+        "source_chain": ["vworld_wfs", source_origin, "official_building_collection"],
         "typeName": type_name,
         "reason": None if features else "official_building_collection_empty",
     }
@@ -1144,6 +1199,7 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
             max_features=DEFAULT_MAX_FEATURES,
         )
         type_name = collection.get("typeName") or preferred_type_name or DEFAULT_VWORLD_TYPENAME
+        source_origin = collection.get("source_origin") or "vworld_map_wfs"
         features = collection.get("features") if isinstance(collection, dict) else []
         if not isinstance(features, list) or not features:
             return cached_match or await get_osm_fallback() or _annotate_footprint_result({
@@ -1151,7 +1207,7 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
                 "source": "vworld_wfs",
                 "typeName": type_name,
                 "reason": collection.get("reason") or "no_polygon_feature_found",
-            }, source_chain=collection.get("source_chain") or ["vworld_wfs"], profile_source="wfs", source_origin="vworld_map_wfs")
+            }, source_chain=collection.get("source_chain") or ["vworld_wfs"], profile_source="wfs", source_origin=source_origin)
 
         matched_features = [
             feature for feature in features
@@ -1166,7 +1222,7 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
                 "source": "vworld_wfs",
                 "typeName": type_name,
                 "reason": "no_official_building_at_click",
-            }, source_chain=collection.get("source_chain") or ["vworld_wfs"], profile_source="wfs", source_origin="vworld_map_wfs")
+            }, source_chain=collection.get("source_chain") or ["vworld_wfs"], profile_source="wfs", source_origin=source_origin)
 
         matched = min(
             matched_features,
@@ -1179,7 +1235,7 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
                 "source": "vworld_wfs",
                 "typeName": type_name,
                 "reason": "no_polygon_feature_found",
-            }, source_chain=collection.get("source_chain") or ["vworld_wfs"], profile_source="wfs", source_origin="vworld_map_wfs")
+            }, source_chain=collection.get("source_chain") or ["vworld_wfs"], profile_source="wfs", source_origin=source_origin)
 
         live_properties = _sanitize_properties(matched.get("properties"))
         result_properties = live_properties
@@ -1208,12 +1264,12 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
             "field_sources": cached_field_sources,
             "official_geometry_receipt": True,
             "official_selection_match": True,
-        }, source_chain=source_chain, profile_source="wfs", source_origin="vworld_map_wfs")
+        }, source_chain=source_chain, profile_source="wfs", source_origin=source_origin)
         display_name = _extract_display_name(result_properties)
         if display_name:
             result["display_name"] = display_name
             result["display_name_source"] = "vworld_wfs"
-            result["display_name_source_origin"] = "vworld_map_wfs"
+            result["display_name_source_origin"] = source_origin
         try:
             _store_footprint_cache_entry(
                 lat,

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 import building_footprint
@@ -40,6 +41,39 @@ class OfficialBuildingMapWfsTests(unittest.TestCase):
         self.assertEqual(captured["kwargs"]["endpoint"], building_footprint.VWORLD_MAP_WFS_ENDPOINT)
         ring = result["features"][0]["ring"]
         self.assertTrue(all(120.0 < point[0] < 130.0 and 30.0 < point[1] < 40.0 for point in ring))
+
+    def test_collection_uses_api_wfs_without_domain_when_map_wfs_fails(self):
+        payload = {
+            "type": "FeatureCollection",
+            "features": [{
+                "id": "lt_c_spbd.2",
+                "properties": {"bd_mgt_sn": "building-2", "buld_nm": "API WFS Building"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[14134600.0, 4518500.0], [14134620.0, 4518500.0], [14134620.0, 4518520.0], [14134600.0, 4518520.0], [14134600.0, 4518500.0]]],
+                },
+            }],
+        }
+        calls = []
+
+        def fetch_collection(params, *args, **kwargs):
+            endpoint = kwargs["endpoint"]
+            calls.append((endpoint, params))
+            if endpoint == building_footprint.VWORLD_MAP_WFS_ENDPOINT:
+                raise urllib.error.HTTPError(endpoint, 502, "Bad Gateway", hdrs=None, fp=None)
+            return json.dumps(payload)
+
+        with (
+            patch.object(building_footprint, "_resolve_vworld_api_key", return_value="server-only-key"),
+            patch.object(building_footprint, "_fetch_text_with_retries_sync", side_effect=fetch_collection),
+        ):
+            result = asyncio.run(building_footprint.lookup_official_building_collection(37.5663, 126.9780))
+
+        self.assertTrue(result["official_available"])
+        self.assertEqual(result["source_origin"], "vworld_api_wfs")
+        self.assertEqual(calls[1][0], building_footprint.VWORLD_WFS_ENDPOINT)
+        self.assertEqual(calls[1][1]["key"], "server-only-key")
+        self.assertNotIn("DOMAIN", calls[1][1])
 
 
 class OfficialBuildingClickTests(unittest.IsolatedAsyncioTestCase):

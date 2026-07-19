@@ -47,7 +47,7 @@ function makeWorker() {
   });
 }
 
-test("uses the Map WFS building collection in EPSG:3857 instead of the unavailable API WFS building route", async () => {
+test("prefers the Map WFS building collection in EPSG:3857", async () => {
   const urls = [];
   const worker = createWorker({
     fetchImpl: async (url) => {
@@ -72,6 +72,36 @@ test("uses the Map WFS building collection in EPSG:3857 instead of the unavailab
   assert.equal(buildingUrl?.searchParams.get("SRSNAME"), "EPSG:3857");
   assert.equal(buildingUrl?.searchParams.get("APIKEY"), "vworld-server-only-key");
   assert.equal(buildingUrl?.searchParams.get("DOMAIN"), env.VWORLD_REFERER);
+});
+
+test("falls back to API WFS without domain when the Map WFS building request fails", async () => {
+  const urls = [];
+  const worker = createWorker({
+    fetchImpl: async (url) => {
+      const parsed = new URL(url);
+      urls.push(parsed);
+      if (parsed.hostname === "map.vworld.kr" && parsed.searchParams.get("TYPENAME") === "lt_c_spbd") {
+        return new Response("upstream unavailable", { status: 502 });
+      }
+      return new Response(
+        parsed.searchParams.get("TYPENAME") === "lt_l_n3a0020000" ? JSON.stringify(roadFeatures) : JSON.stringify(buildingFeatures),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    },
+  });
+
+  const response = await worker.fetch(
+    new Request("https://bridge.example/api/canyon-width?lat=0&lon=-0.00006", {
+      headers: { authorization: "Bearer server-only-token" },
+    }),
+    env,
+  );
+
+  const payload = await response.json();
+  const apiBuildingUrl = urls.find((url) => url.hostname === "api.vworld.kr" && url.searchParams.get("TYPENAME") === "lt_c_spbd");
+  assert.equal(payload.available, true);
+  assert.equal(apiBuildingUrl?.searchParams.get("key"), "vworld-server-only-key");
+  assert.equal(apiBuildingUrl?.searchParams.has("DOMAIN"), false);
 });
 
 const env = {
