@@ -104,6 +104,33 @@ test("falls back to API WFS without domain when the Map WFS building request fai
   assert.equal(apiBuildingUrl?.searchParams.has("DOMAIN"), false);
 });
 
+test("does not send a browser referer to the API WFS fallback", async () => {
+  const requests = [];
+  const worker = createWorker({
+    fetchImpl: async (url, options) => {
+      const parsed = new URL(url);
+      requests.push({ parsed, referer: options?.headers?.referer ?? null });
+      if (parsed.hostname === "map.vworld.kr" && parsed.searchParams.get("TYPENAME") === "lt_c_spbd") {
+        return new Response("upstream unavailable", { status: 502 });
+      }
+      return new Response(
+        parsed.searchParams.get("TYPENAME") === "lt_l_n3a0020000" ? JSON.stringify(roadFeatures) : JSON.stringify(buildingFeatures),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    },
+  });
+
+  await worker.fetch(
+    new Request("https://bridge.example/api/canyon-width?lat=0&lon=-0.00006", {
+      headers: { authorization: "Bearer server-only-token" },
+    }),
+    env,
+  );
+
+  const apiBuildingRequest = requests.find((request) => request.parsed.hostname === "api.vworld.kr" && request.parsed.searchParams.get("TYPENAME") === "lt_c_spbd");
+  assert.equal(apiBuildingRequest?.referer, null);
+});
+
 const env = {
   OFFICIAL_GIS_BRIDGE_TOKEN: "server-only-token",
   VWORLD_DATA_API_KEY: "vworld-server-only-key",

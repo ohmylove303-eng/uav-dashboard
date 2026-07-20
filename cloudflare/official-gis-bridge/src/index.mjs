@@ -178,7 +178,9 @@ function unavailable(reason, road = null, target = null) {
 }
 
 async function fetchJson(fetchImpl, url, referer, source) {
-  const response = await fetchImpl(url, { headers: { accept: "application/json", referer, "user-agent": "uav-official-gis-bridge/1.0" } });
+  const headers = { accept: "application/json", "user-agent": "uav-official-gis-bridge/1.0" };
+  if (referer) headers.referer = referer;
+  const response = await fetchImpl(url, { headers });
   if (!response.ok) throw new Error(`${source}_upstream_status_${response.status}`);
   const text = await response.text();
   try {
@@ -227,7 +229,8 @@ async function fetchOfficialWfsJson(fetchImpl, requests, referer, source) {
   let lastError;
   for (const request of requests) {
     try {
-      return { payload: await fetchJson(fetchImpl, request.url, referer, source), sourceOrigin: request.sourceOrigin };
+      const requestReferer = request.sourceOrigin === "vworld_map_wfs" ? referer : null;
+      return { payload: await fetchJson(fetchImpl, request.url, requestReferer, source), sourceOrigin: request.sourceOrigin };
     } catch (error) {
       lastError = error;
     }
