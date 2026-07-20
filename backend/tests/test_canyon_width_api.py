@@ -1,9 +1,11 @@
+import asyncio
 from pathlib import Path
 import sys
 import unittest
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
+import httpx
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +17,20 @@ import main  # noqa: E402
 
 def _lonlat_ring(points):
     return [list(main._mercator_to_lonlat(x, y)) for x, y in points]
+
+
+class _BridgeTransportFailureClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get(self, *args, **kwargs):
+        raise httpx.ConnectError("bridge unavailable")
 
 
 class CanyonWidthRouteTests(unittest.TestCase):
@@ -177,6 +193,54 @@ class CanyonWidthRouteTests(unittest.TestCase):
         self.assertIsNone(payload["facade_gap_m"])
         self.assertEqual(payload["reason"], "building_upstream_status_502")
         self.assertIn("official_gis_bridge", payload["source_chain"])
+
+    def test_route_holds_when_the_configured_bridge_transport_fails(self):
+        bridge_hold = {
+            "available": False,
+            "official_available": False,
+            "facade_gap_m": None,
+            "effective_canyon_width_m": None,
+            "official_road_right_of_way_width_m": None,
+            "road_crossing_verified": False,
+            "source": "official_gis_bridge_unavailable",
+            "source_chain": ["official_gis_bridge_unavailable"],
+            "reason": "official_gis_bridge_transport_error",
+            "receipt": {
+                "kind": "official_gis_bridge_unavailable",
+                "target_geometry_receipt": False,
+                "opposing_geometry_receipt": False,
+                "road_geometry_receipt": False,
+                "road_crossing_verified": False,
+            },
+        }
+        with (
+            patch.object(main, "fetch_official_gis_bridge_canyon_evidence", AsyncMock(return_value=bridge_hold)),
+            patch.object(main, "fetch_road_width_evidence", AsyncMock(side_effect=AssertionError("configured bridge failure must not fall through"))),
+            patch.object(main, "lookup_official_building_collection", AsyncMock(side_effect=AssertionError("configured bridge failure must not fall through"))),
+        ):
+            response = self.client.get("/api/canyon-width", params={"lat": self.target_lat, "lon": self.target_lon})
+
+        payload = response.json()
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(payload["official_available"])
+        self.assertIsNone(payload["facade_gap_m"])
+        self.assertEqual(payload["reason"], "official_gis_bridge_transport_error")
+        self.assertEqual(payload["bridge_provider"], "official_gis_bridge")
+
+    def test_bridge_client_returns_a_safe_hold_when_transport_fails(self):
+        with (
+            patch.object(main, "OFFICIAL_GIS_BRIDGE_URL", "https://bridge.example.test/api/canyon-width"),
+            patch.object(main, "OFFICIAL_GIS_BRIDGE_TOKEN", "server-only-token"),
+            patch.object(main.httpx, "AsyncClient", _BridgeTransportFailureClient),
+        ):
+            payload = asyncio.run(main.fetch_official_gis_bridge_canyon_evidence(self.target_lat, self.target_lon))
+
+        self.assertFalse(payload["available"])
+        self.assertFalse(payload["official_available"])
+        self.assertIsNone(payload["facade_gap_m"])
+        self.assertEqual(payload["source"], "official_gis_bridge_unavailable")
+        self.assertEqual(payload["reason"], "official_gis_bridge_transport_error")
+        self.assertEqual(payload["receipt"]["kind"], "official_gis_bridge_unavailable")
 
     def test_dedicated_bridge_requires_its_server_only_token(self):
         with patch.object(main, "OFFICIAL_GIS_BRIDGE_INBOUND_TOKEN", "bridge-secret"):

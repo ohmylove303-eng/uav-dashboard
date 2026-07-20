@@ -938,6 +938,34 @@ def _unavailable_canyon_evidence(
     }
 
 
+def _unavailable_official_gis_bridge_evidence(reason: str) -> Dict[str, Any]:
+    """Return a safe HOLD when the configured server-only bridge cannot be used."""
+    source_chain = ["official_gis_bridge", "official_gis_bridge_unavailable"]
+    return {
+        "available": False,
+        "official_available": False,
+        "facade_gap_m": None,
+        "effective_canyon_width_m": None,
+        "official_road_right_of_way_width_m": None,
+        "road_name": None,
+        "target_building": None,
+        "opposing_building": None,
+        "road_crossing_verified": False,
+        "normal_alignment": None,
+        "source": "official_gis_bridge_unavailable",
+        "source_chain": source_chain,
+        "reason": reason,
+        "receipt": {
+            "kind": "official_gis_bridge_unavailable",
+            "target_geometry_receipt": False,
+            "opposing_geometry_receipt": False,
+            "road_geometry_receipt": False,
+            "road_crossing_verified": False,
+            "source_chain": source_chain,
+        },
+    }
+
+
 def _select_target_building_from_collection(
     collection: Dict[str, Any],
     lat: float,
@@ -1002,13 +1030,17 @@ def _bridge_canyon_evidence_is_explicitly_unavailable(payload: Any) -> bool:
     if not isinstance(payload, dict):
         return False
     receipt = payload.get("receipt")
+    source = payload.get("source")
+    receipt_kind = receipt.get("kind") if isinstance(receipt, dict) else None
     return bool(
         payload.get("available") is False
         and payload.get("official_available") is False
-        and payload.get("source") == "official_canyon_width_unavailable"
         and payload.get("reason")
         and isinstance(receipt, dict)
-        and receipt.get("kind") == "official_canyon_width_unavailable"
+        and (
+            (source == "official_canyon_width_unavailable" and receipt_kind == "official_canyon_width_unavailable")
+            or (source == "official_gis_bridge_unavailable" and receipt_kind == "official_gis_bridge_unavailable")
+        )
     )
 
 
@@ -1016,7 +1048,7 @@ def _with_official_gis_bridge_unavailable_provenance(payload: Dict[str, Any]) ->
     source_chain = _normalize_source_chain(
         payload.get("source_chain"),
         "official_gis_bridge",
-        "official_canyon_width_unavailable",
+        payload.get("source"),
     )
     receipt = dict(payload.get("receipt") or {})
     receipt["source_chain"] = source_chain
@@ -1047,13 +1079,17 @@ async def fetch_official_gis_bridge_canyon_evidence(
                 headers={"Authorization": f"Bearer {OFFICIAL_GIS_BRIDGE_TOKEN}"},
             )
         if response.status_code != 200:
-            return None
+            return _unavailable_official_gis_bridge_evidence(f"official_gis_bridge_http_{response.status_code}")
         payload = response.json()
-    except (httpx.HTTPError, ValueError):
-        return None
+    except httpx.TimeoutException:
+        return _unavailable_official_gis_bridge_evidence("official_gis_bridge_timeout")
+    except httpx.HTTPError:
+        return _unavailable_official_gis_bridge_evidence("official_gis_bridge_transport_error")
+    except ValueError:
+        return _unavailable_official_gis_bridge_evidence("official_gis_bridge_invalid_payload")
 
     if not isinstance(payload, dict):
-        return None
+        return _unavailable_official_gis_bridge_evidence("official_gis_bridge_invalid_payload")
 
     return payload
 
