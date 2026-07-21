@@ -1044,6 +1044,14 @@ def _bridge_canyon_evidence_is_explicitly_unavailable(payload: Any) -> bool:
     )
 
 
+def _bridge_vworld_upstream_failure_allows_direct_fallback(payload: Any) -> bool:
+    """Allow Render to re-query official VWorld geometry after a Worker-only upstream failure."""
+    if not _bridge_canyon_evidence_is_explicitly_unavailable(payload):
+        return False
+    reason = payload.get("reason")
+    return isinstance(reason, str) and reason.startswith(("building_upstream_status_", "road_upstream_status_"))
+
+
 def _with_official_gis_bridge_unavailable_provenance(payload: Dict[str, Any]) -> Dict[str, Any]:
     source_chain = _normalize_source_chain(
         payload.get("source_chain"),
@@ -1103,8 +1111,12 @@ async def fetch_canyon_width_evidence(lat: float, lon: float, road_name: Optiona
     bridge_evidence = await fetch_official_gis_bridge_canyon_evidence(lat, lon, road_name=road_name)
     if _bridge_canyon_evidence_is_verified(bridge_evidence):
         return _cache_set(CANYON_EVIDENCE_CACHE, cache_key, _with_official_gis_bridge_provenance(bridge_evidence))
+    bridge_fallback_reason: Optional[str] = None
     if _bridge_canyon_evidence_is_explicitly_unavailable(bridge_evidence):
-        return _with_official_gis_bridge_unavailable_provenance(bridge_evidence)
+        if _bridge_vworld_upstream_failure_allows_direct_fallback(bridge_evidence):
+            bridge_fallback_reason = str(bridge_evidence["reason"])
+        else:
+            return _with_official_gis_bridge_unavailable_provenance(bridge_evidence)
 
     road_evidence, collection = await asyncio.gather(
         fetch_road_width_evidence(lat, lon, road_name=road_name),
@@ -1190,6 +1202,10 @@ async def fetch_canyon_width_evidence(lat: float, lon: float, road_name: Optiona
         "reason": None,
         "receipt": receipt,
     }
+    if bridge_fallback_reason:
+        result["bridge_provider"] = "official_gis_bridge"
+        result["bridge_fallback_reason"] = bridge_fallback_reason
+        receipt["bridge_fallback_reason"] = bridge_fallback_reason
     return _cache_set(CANYON_EVIDENCE_CACHE, cache_key, result)
 
 

@@ -164,7 +164,16 @@ class CanyonWidthRouteTests(unittest.TestCase):
         self.assertEqual(payload["facade_gap_m"], 27.0)
         self.assertNotEqual(payload["facade_gap_m"], incomplete_bridge_result["facade_gap_m"])
 
-    def test_route_returns_an_explicit_bridge_hold_without_slow_local_fallback(self):
+    def test_route_uses_direct_official_fallback_after_bridge_vworld_upstream_failure(self):
+        collection = {
+            "available": True,
+            "official_available": True,
+            "source_chain": ["vworld_wfs"],
+            "features": [
+                {"id": "target", "name": "대상건물", "ring": self.target_ring},
+                {"id": "opposite-side", "name": "맞은편", "ring": self.opposing_ring},
+            ],
+        }
         bridge_hold = {
             "available": False,
             "official_available": False,
@@ -182,17 +191,17 @@ class CanyonWidthRouteTests(unittest.TestCase):
         }
         with (
             patch.object(main, "fetch_official_gis_bridge_canyon_evidence", AsyncMock(return_value=bridge_hold)),
-            patch.object(main, "fetch_road_width_evidence", AsyncMock(side_effect=AssertionError("explicit bridge HOLD must not fall through"))),
-            patch.object(main, "lookup_official_building_collection", AsyncMock(side_effect=AssertionError("explicit bridge HOLD must not fall through"))),
+            patch.object(main, "fetch_road_width_evidence", AsyncMock(return_value=self.road)),
+            patch.object(main, "lookup_official_building_collection", AsyncMock(return_value=collection)),
         ):
             response = self.client.get("/api/canyon-width", params={"lat": self.target_lat, "lon": self.target_lon})
 
         payload = response.json()
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(payload["official_available"])
-        self.assertIsNone(payload["facade_gap_m"])
-        self.assertEqual(payload["reason"], "building_upstream_status_502")
-        self.assertIn("official_gis_bridge", payload["source_chain"])
+        self.assertTrue(payload["official_available"])
+        self.assertEqual(payload["facade_gap_m"], 27.0)
+        self.assertEqual(payload["bridge_fallback_reason"], "building_upstream_status_502")
+        self.assertEqual(payload["bridge_provider"], "official_gis_bridge")
 
     def test_route_holds_when_the_configured_bridge_transport_fails(self):
         bridge_hold = {
