@@ -812,6 +812,9 @@ def _normalize_road_candidate(feature: Dict[str, Any], lat: float, lon: float) -
 
 def _build_vworld_wfs_request_url(endpoint: Dict[str, str], bbox: str, key: str, referer: str) -> str:
     url = httpx.URL(endpoint["url"])
+    registered_domain = referer
+    if "://" in referer:
+        registered_domain = httpx.URL(referer).netloc.decode("ascii")
     params = {
         "service" if endpoint["mode"] == "api" else "SERVICE": "WFS",
         "request" if endpoint["mode"] == "api" else "REQUEST": "GetFeature",
@@ -826,10 +829,10 @@ def _build_vworld_wfs_request_url(endpoint: Dict[str, str], bbox: str, key: str,
     }
     if endpoint["mode"] == "api":
         params["key"] = key
-        params["domain"] = referer
+        params["domain"] = registered_domain
     else:
         params["APIKEY"] = key
-        params["DOMAIN"] = referer
+        params["DOMAIN"] = registered_domain
     return str(url.copy_merge_params(params))
 
 

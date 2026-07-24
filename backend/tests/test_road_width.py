@@ -47,7 +47,7 @@ class RoadWidthRouteTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(main.app)
 
-    def test_api_wfs_request_includes_registered_domain(self):
+    def test_api_wfs_request_uses_registered_host_without_scheme_or_path(self):
         request_url = main._build_vworld_wfs_request_url(
             {"url": "https://api.vworld.kr/req/wfs", "mode": "api"},
             "1,2,3,4",
@@ -57,7 +57,7 @@ class RoadWidthRouteTests(unittest.TestCase):
         query = parse_qs(urlparse(request_url).query)
 
         self.assertEqual(query["key"], ["test-key"])
-        self.assertEqual(query["domain"], ["https://uav-vercel.pages.dev/"])
+        self.assertEqual(query["domain"], ["uav-vercel.pages.dev"])
 
     def test_route_builds_vworld_request_and_selects_closest_official_feature(self):
         _FakeAsyncClient.calls = []
