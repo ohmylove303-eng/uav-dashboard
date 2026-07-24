@@ -1097,7 +1097,30 @@ def _with_official_gis_bridge_unavailable_provenance(payload: Dict[str, Any]) ->
     return result
 
 
-def _with_official_gis_bridge_fallback_provenance(payload: Dict[str, Any], reason: Optional[str]) -> Dict[str, Any]:
+def _sanitize_bridge_upstream_attempts(raw_attempts: Any) -> List[Dict[str, str]]:
+    if not isinstance(raw_attempts, list):
+        return []
+    allowed_origins = {"vworld_map_wfs", "vworld_api_wfs"}
+    sanitized: List[Dict[str, str]] = []
+    for attempt in raw_attempts:
+        if not isinstance(attempt, dict):
+            continue
+        source_origin = attempt.get("source_origin")
+        outcome = attempt.get("outcome")
+        if (
+            source_origin in allowed_origins
+            and isinstance(outcome, str)
+            and re.fullmatch(r"upstream_(?:status_[1-5][0-9]{2}|invalid_json|request_failed)", outcome)
+        ):
+            sanitized.append({"source_origin": source_origin, "outcome": outcome})
+    return sanitized
+
+
+def _with_official_gis_bridge_fallback_provenance(
+    payload: Dict[str, Any],
+    reason: Optional[str],
+    upstream_attempts: Any = None,
+) -> Dict[str, Any]:
     if not reason:
         return payload
     result = dict(payload)
@@ -1105,6 +1128,10 @@ def _with_official_gis_bridge_fallback_provenance(payload: Dict[str, Any], reaso
     result["bridge_provider"] = "official_gis_bridge"
     result["bridge_fallback_reason"] = reason
     receipt["bridge_fallback_reason"] = reason
+    sanitized_attempts = _sanitize_bridge_upstream_attempts(upstream_attempts)
+    if sanitized_attempts:
+        result["bridge_upstream_attempts"] = sanitized_attempts
+        receipt["bridge_upstream_attempts"] = sanitized_attempts
     result["receipt"] = receipt
     return result
 
@@ -1154,9 +1181,11 @@ async def fetch_canyon_width_evidence(lat: float, lon: float, road_name: Optiona
     if _bridge_canyon_evidence_is_verified(bridge_evidence):
         return _cache_set(CANYON_EVIDENCE_CACHE, cache_key, _with_official_gis_bridge_provenance(bridge_evidence))
     bridge_fallback_reason: Optional[str] = None
+    bridge_upstream_attempts: List[Dict[str, str]] = []
     if _bridge_canyon_evidence_is_explicitly_unavailable(bridge_evidence):
         if _bridge_vworld_upstream_failure_allows_direct_fallback(bridge_evidence):
             bridge_fallback_reason = str(bridge_evidence["reason"])
+            bridge_upstream_attempts = _sanitize_bridge_upstream_attempts(bridge_evidence.get("upstream_attempts"))
         else:
             return _with_official_gis_bridge_unavailable_provenance(bridge_evidence)
 
@@ -1169,6 +1198,7 @@ async def fetch_canyon_width_evidence(lat: float, lon: float, road_name: Optiona
         return _with_official_gis_bridge_fallback_provenance(
             _unavailable_canyon_evidence(road_evidence, road_evidence.get("reason") or "official_road_geometry_not_matched"),
             bridge_fallback_reason,
+            bridge_upstream_attempts,
         )
 
     if not collection.get("official_available"):
@@ -1178,6 +1208,7 @@ async def fetch_canyon_width_evidence(lat: float, lon: float, road_name: Optiona
                 collection.get("reason") or "official_building_collection_not_matched",
             ),
             bridge_fallback_reason,
+            bridge_upstream_attempts,
         )
 
     target = _select_target_building_from_collection(collection, lat, lon)
@@ -1192,6 +1223,7 @@ async def fetch_canyon_width_evidence(lat: float, lon: float, road_name: Optiona
         return _with_official_gis_bridge_fallback_provenance(
             _unavailable_canyon_evidence(road_evidence, "target_official_building_not_selected", target_building),
             bridge_fallback_reason,
+            bridge_upstream_attempts,
         )
 
     buildings = []
@@ -1220,7 +1252,7 @@ async def fetch_canyon_width_evidence(lat: float, lon: float, road_name: Optiona
         unavailable["source_chain"] = source_chain
         unavailable["receipt"]["source_chain"] = source_chain
         unavailable["receipt"]["target_geometry_receipt"] = True
-        return _with_official_gis_bridge_fallback_provenance(unavailable, bridge_fallback_reason)
+        return _with_official_gis_bridge_fallback_provenance(unavailable, bridge_fallback_reason, bridge_upstream_attempts)
 
     opposing_building = {
         "id": measurement.get("opposing_building_id"),
@@ -1256,7 +1288,7 @@ async def fetch_canyon_width_evidence(lat: float, lon: float, road_name: Optiona
     return _cache_set(
         CANYON_EVIDENCE_CACHE,
         cache_key,
-        _with_official_gis_bridge_fallback_provenance(result, bridge_fallback_reason),
+        _with_official_gis_bridge_fallback_provenance(result, bridge_fallback_reason, bridge_upstream_attempts),
     )
 
 

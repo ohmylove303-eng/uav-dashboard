@@ -211,6 +211,10 @@ class CanyonWidthRouteTests(unittest.TestCase):
             "source": "official_canyon_width_unavailable",
             "source_chain": ["vworld_wfs", "official_canyon_width_unavailable"],
             "reason": "road_upstream_status_502",
+            "upstream_attempts": [
+                {"source_origin": "vworld_map_wfs", "outcome": "upstream_status_502"},
+                {"source_origin": "vworld_api_wfs", "outcome": "upstream_status_502"},
+            ],
             "receipt": {
                 "kind": "official_canyon_width_unavailable",
                 "target_geometry_receipt": False,
@@ -250,6 +254,13 @@ class CanyonWidthRouteTests(unittest.TestCase):
         self.assertEqual(payload["reason"], "network_error")
         self.assertEqual(payload["bridge_fallback_reason"], "road_upstream_status_502")
         self.assertEqual(payload["bridge_provider"], "official_gis_bridge")
+        self.assertEqual(
+            payload["bridge_upstream_attempts"],
+            [
+                {"source_origin": "vworld_map_wfs", "outcome": "upstream_status_502"},
+                {"source_origin": "vworld_api_wfs", "outcome": "upstream_status_502"},
+            ],
+        )
 
     def test_route_holds_when_the_configured_bridge_transport_fails(self):
         bridge_hold = {

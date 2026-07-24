@@ -148,9 +148,9 @@ function selectRoad(payload, lat, lon, requestedRoadName) {
   return candidates[0] ?? null;
 }
 
-function unavailable(reason, road = null, target = null) {
+function unavailable(reason, road = null, target = null, upstreamAttempts = []) {
   const sourceChain = ["vworld_wfs", "official_canyon_width_unavailable"];
-  return {
+  const payload = {
     available: false,
     official_available: false,
     facade_gap_m: null,
@@ -175,6 +175,8 @@ function unavailable(reason, road = null, target = null) {
       source_chain: sourceChain,
     },
   };
+  if (upstreamAttempts.length) payload.upstream_attempts = upstreamAttempts;
+  return payload;
 }
 
 async function fetchJson(fetchImpl, url, referer, source) {
@@ -227,15 +229,21 @@ function roadRequests(lat, lon, env) {
 
 async function fetchOfficialWfsJson(fetchImpl, requests, referer, source) {
   let lastError;
+  const upstreamAttempts = [];
   for (const request of requests) {
     try {
       const requestReferer = request.sourceOrigin === "vworld_map_wfs" ? referer : null;
       return { payload: await fetchJson(fetchImpl, request.url, requestReferer, source), sourceOrigin: request.sourceOrigin };
     } catch (error) {
       lastError = error;
+      const message = error instanceof Error ? error.message : "upstream_request_failed";
+      const outcome = message.startsWith(`${source}_`) ? message.slice(source.length + 1) : "upstream_request_failed";
+      upstreamAttempts.push({ source_origin: request.sourceOrigin, outcome });
     }
   }
-  throw lastError ?? new Error(`${source}_upstream_unavailable`);
+  const failure = lastError instanceof Error ? lastError : new Error(`${source}_upstream_unavailable`);
+  failure.upstreamAttempts = upstreamAttempts;
+  throw failure;
 }
 
 async function canyonEvidence(lat, lon, roadNameValue, env, fetchImpl) {
@@ -246,7 +254,8 @@ async function canyonEvidence(lat, lon, roadNameValue, env, fetchImpl) {
     buildingResult = await fetchOfficialWfsJson(fetchImpl, buildingRequests(lat, lon, env), env.VWORLD_REFERER, "building");
     roadResult = await fetchOfficialWfsJson(fetchImpl, roadRequests(lat, lon, env), env.VWORLD_REFERER, "road");
   } catch (error) {
-    return unavailable(error instanceof Error ? error.message : "upstream_request_failed");
+    const upstreamAttempts = error instanceof Error && Array.isArray(error.upstreamAttempts) ? error.upstreamAttempts : [];
+    return unavailable(error instanceof Error ? error.message : "upstream_request_failed", null, null, upstreamAttempts);
   }
   const buildingPayload = buildingResult.payload;
   const roadPayload = roadResult.payload;

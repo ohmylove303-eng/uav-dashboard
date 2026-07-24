@@ -180,4 +180,8 @@ test("identifies the official upstream that is unavailable without fabricating c
   assert.equal(payload.available, false);
   assert.equal(payload.source, "official_canyon_width_unavailable");
   assert.equal(payload.reason, "building_upstream_status_502");
+  assert.deepEqual(payload.upstream_attempts, [
+    { source_origin: "vworld_map_wfs", outcome: "upstream_status_502" },
+    { source_origin: "vworld_api_wfs", outcome: "upstream_status_502" },
+  ]);
 });
