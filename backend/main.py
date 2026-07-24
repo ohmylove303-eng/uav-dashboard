@@ -1097,6 +1097,18 @@ def _with_official_gis_bridge_unavailable_provenance(payload: Dict[str, Any]) ->
     return result
 
 
+def _with_official_gis_bridge_fallback_provenance(payload: Dict[str, Any], reason: Optional[str]) -> Dict[str, Any]:
+    if not reason:
+        return payload
+    result = dict(payload)
+    receipt = dict(result.get("receipt") or {})
+    result["bridge_provider"] = "official_gis_bridge"
+    result["bridge_fallback_reason"] = reason
+    receipt["bridge_fallback_reason"] = reason
+    result["receipt"] = receipt
+    return result
+
+
 async def fetch_official_gis_bridge_canyon_evidence(
     lat: float,
     lon: float,
@@ -1154,12 +1166,18 @@ async def fetch_canyon_width_evidence(lat: float, lon: float, road_name: Optiona
     )
     road_paths = road_evidence.get("geometry_paths") or []
     if not road_evidence.get("official_available") or not road_evidence.get("geometry_receipt") or not road_paths:
-        return _unavailable_canyon_evidence(road_evidence, road_evidence.get("reason") or "official_road_geometry_not_matched")
+        return _with_official_gis_bridge_fallback_provenance(
+            _unavailable_canyon_evidence(road_evidence, road_evidence.get("reason") or "official_road_geometry_not_matched"),
+            bridge_fallback_reason,
+        )
 
     if not collection.get("official_available"):
-        return _unavailable_canyon_evidence(
-            road_evidence,
-            collection.get("reason") or "official_building_collection_not_matched",
+        return _with_official_gis_bridge_fallback_provenance(
+            _unavailable_canyon_evidence(
+                road_evidence,
+                collection.get("reason") or "official_building_collection_not_matched",
+            ),
+            bridge_fallback_reason,
         )
 
     target = _select_target_building_from_collection(collection, lat, lon)
@@ -1171,7 +1189,10 @@ async def fetch_canyon_width_evidence(lat: float, lon: float, road_name: Optiona
     }
     target_geometry = target.get("ring") if target else None
     if not isinstance(target_geometry, list) or len(target_geometry) < 4:
-        return _unavailable_canyon_evidence(road_evidence, "target_official_building_not_selected", target_building)
+        return _with_official_gis_bridge_fallback_provenance(
+            _unavailable_canyon_evidence(road_evidence, "target_official_building_not_selected", target_building),
+            bridge_fallback_reason,
+        )
 
     buildings = []
     for feature in collection.get("features") or []:
@@ -1199,7 +1220,7 @@ async def fetch_canyon_width_evidence(lat: float, lon: float, road_name: Optiona
         unavailable["source_chain"] = source_chain
         unavailable["receipt"]["source_chain"] = source_chain
         unavailable["receipt"]["target_geometry_receipt"] = True
-        return unavailable
+        return _with_official_gis_bridge_fallback_provenance(unavailable, bridge_fallback_reason)
 
     opposing_building = {
         "id": measurement.get("opposing_building_id"),
@@ -1232,11 +1253,11 @@ async def fetch_canyon_width_evidence(lat: float, lon: float, road_name: Optiona
         "reason": None,
         "receipt": receipt,
     }
-    if bridge_fallback_reason:
-        result["bridge_provider"] = "official_gis_bridge"
-        result["bridge_fallback_reason"] = bridge_fallback_reason
-        receipt["bridge_fallback_reason"] = bridge_fallback_reason
-    return _cache_set(CANYON_EVIDENCE_CACHE, cache_key, result)
+    return _cache_set(
+        CANYON_EVIDENCE_CACHE,
+        cache_key,
+        _with_official_gis_bridge_fallback_provenance(result, bridge_fallback_reason),
+    )
 
 
 def _normalize_canyon_evidence(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:

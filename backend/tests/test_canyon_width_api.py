@@ -203,6 +203,54 @@ class CanyonWidthRouteTests(unittest.TestCase):
         self.assertEqual(payload["bridge_fallback_reason"], "building_upstream_status_502")
         self.assertEqual(payload["bridge_provider"], "official_gis_bridge")
 
+    def test_route_preserves_bridge_failure_when_direct_fallback_is_unavailable(self):
+        bridge_hold = {
+            "available": False,
+            "official_available": False,
+            "facade_gap_m": None,
+            "source": "official_canyon_width_unavailable",
+            "source_chain": ["vworld_wfs", "official_canyon_width_unavailable"],
+            "reason": "road_upstream_status_502",
+            "receipt": {
+                "kind": "official_canyon_width_unavailable",
+                "target_geometry_receipt": False,
+                "opposing_geometry_receipt": False,
+                "road_geometry_receipt": False,
+                "road_crossing_verified": False,
+            },
+        }
+        direct_road_hold = {
+            "available": False,
+            "official_available": False,
+            "width_m": None,
+            "lane_count": None,
+            "road_name": None,
+            "source": "official_road_right_of_way_unavailable",
+            "source_chain": ["vworld_wfs", "official_road_right_of_way_unavailable"],
+            "reason": "network_error",
+        }
+        collection_hold = {
+            "available": False,
+            "official_available": False,
+            "features": [],
+            "source": "vworld_wfs",
+            "source_chain": ["vworld_wfs"],
+            "reason": "official_building_collection_request_failed",
+        }
+        with (
+            patch.object(main, "fetch_official_gis_bridge_canyon_evidence", AsyncMock(return_value=bridge_hold)),
+            patch.object(main, "fetch_road_width_evidence", AsyncMock(return_value=direct_road_hold)),
+            patch.object(main, "lookup_official_building_collection", AsyncMock(return_value=collection_hold)),
+        ):
+            response = self.client.get("/api/canyon-width", params={"lat": self.target_lat, "lon": self.target_lon})
+
+        payload = response.json()
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(payload["official_available"])
+        self.assertEqual(payload["reason"], "network_error")
+        self.assertEqual(payload["bridge_fallback_reason"], "road_upstream_status_502")
+        self.assertEqual(payload["bridge_provider"], "official_gis_bridge")
+
     def test_route_holds_when_the_configured_bridge_transport_fails(self):
         bridge_hold = {
             "available": False,
