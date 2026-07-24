@@ -54,6 +54,15 @@ CLIENT_RUNTIME_ENV_KEYS = (
     "VITE_VWORLD_3D_API_KEY",
     "VITE_VWORLD_KEY",
     "NEXT_PUBLIC_VWORLD_API_KEY",
+)
+
+# WFS building and road geometry credentials are server-only. Do not add these
+# names to CLIENT_RUNTIME_ENV_KEYS or accept browser-prefixed fallbacks here.
+# VWORLD_API_KEY remains as a Render compatibility name; runtime-config.js does
+# not publish it to browsers.
+SERVER_ONLY_VWORLD_DATA_ENV_KEYS = (
+    "VWORLD_OFFICIAL_DATA_API_KEY",
+    "VWORLD_DATA_API_KEY",
     "VWORLD_API_KEY",
 )
 
@@ -610,13 +619,7 @@ def _build_input_quality(
 
 
 def _vworld_api_key() -> Optional[str]:
-    for key in (
-        "VWORLD_DATA_API_KEY",
-        "VWORLD_OFFICIAL_DATA_API_KEY",
-        "VITE_VWORLD_API_KEY",
-        "NEXT_PUBLIC_VWORLD_API_KEY",
-        "VWORLD_API_KEY",
-    ):
+    for key in SERVER_ONLY_VWORLD_DATA_ENV_KEYS:
         value = os.getenv(key)
         if value:
             return value
@@ -625,6 +628,30 @@ def _vworld_api_key() -> Optional[str]:
 
 def _vworld_referer() -> str:
     return str(os.getenv("VWORLD_REFERER") or os.getenv("VWORLD_DOMAIN") or "https://uav-vercel.pages.dev/").strip()
+
+
+def _official_gis_readiness() -> Dict[str, Any]:
+    """Expose deployment readiness without ever returning a credential or bridge URL."""
+    vworld_data_key_configured = bool(_vworld_api_key())
+    bridge_url_configured = bool(OFFICIAL_GIS_BRIDGE_URL)
+    bridge_token_configured = bool(OFFICIAL_GIS_BRIDGE_TOKEN)
+    missing = []
+    if not vworld_data_key_configured:
+        missing.append("vworld_server_data_api_key")
+    if not bridge_url_configured:
+        missing.append("official_gis_bridge_url")
+    if not bridge_token_configured:
+        missing.append("official_gis_bridge_token")
+
+    return {
+        "status": "ready" if not missing else "hold",
+        "vworld_server_data_key_configured": vworld_data_key_configured,
+        "vworld_referer_source": "environment" if (os.getenv("VWORLD_REFERER") or os.getenv("VWORLD_DOMAIN")) else "default",
+        "official_gis_bridge_url_configured": bridge_url_configured,
+        "official_gis_bridge_token_configured": bridge_token_configured,
+        "facade_gap_policy": "verified_official_geometry_only",
+        "missing_prerequisites": missing,
+    }
 
 
 def _parse_loose_number(value: Any) -> Optional[float]:
@@ -1913,6 +1940,11 @@ async def health_check():
         "version": app.version,
         "kma_configured": bool(KMA_API_KEY)
     }
+
+
+@app.get("/api/official-gis/readiness")
+async def get_official_gis_readiness_api():
+    return _official_gis_readiness()
 
 @app.get("/api/kma/status")
 async def get_kma_status(lat: float = 37.558056, lon: float = 126.708333):

@@ -109,7 +109,7 @@ class RoadWidthRouteTests(unittest.TestCase):
 
         with patch.dict(
             main.os.environ,
-            {"VWORLD_API_KEY": "test-key", "VWORLD_REFERER": "https://uav-vercel.pages.dev/"},
+            {"VWORLD_DATA_API_KEY": "test-key", "VWORLD_REFERER": "https://uav-vercel.pages.dev/"},
             clear=False,
         ), patch.object(main.httpx, "AsyncClient", _FakeAsyncClient):
             response = self.client.get("/api/road-width", params={"lat": 37.5665, "lon": 126.9780})
@@ -135,7 +135,7 @@ class RoadWidthRouteTests(unittest.TestCase):
 
         with patch.dict(
             main.os.environ,
-            {"VWORLD_API_KEY": "test-key", "VWORLD_REFERER": "https://uav-vercel.pages.dev/"},
+            {"VWORLD_DATA_API_KEY": "test-key", "VWORLD_REFERER": "https://uav-vercel.pages.dev/"},
             clear=False,
         ), patch.object(main.httpx, "AsyncClient", _FakeAsyncClient):
             response = self.client.get("/api/road-width", params={"lat": 37.5665, "lon": 126.9780})
