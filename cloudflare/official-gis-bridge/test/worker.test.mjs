@@ -71,7 +71,7 @@ test("prefers the Map WFS building collection in EPSG:3857", async () => {
   assert.equal(buildingUrl?.pathname, "/js/wfs.do");
   assert.equal(buildingUrl?.searchParams.get("SRSNAME"), "EPSG:3857");
   assert.equal(buildingUrl?.searchParams.get("APIKEY"), "vworld-server-only-key");
-  assert.equal(buildingUrl?.searchParams.get("DOMAIN"), env.VWORLD_REFERER);
+  assert.equal(buildingUrl?.searchParams.get("DOMAIN"), "uav-dashboard.onrender.com");
 });
 
 test("falls back to API WFS without domain when the Map WFS building request fails", async () => {
@@ -98,10 +98,13 @@ test("falls back to API WFS without domain when the Map WFS building request fai
   );
 
   const payload = await response.json();
-  const apiBuildingUrl = urls.find((url) => url.hostname === "api.vworld.kr" && url.searchParams.get("TYPENAME") === "lt_c_spbd");
+  const apiBuildingUrl = urls.find((url) => url.hostname === "api.vworld.kr" && url.searchParams.get("typename") === "lt_c_spbd");
   assert.equal(payload.available, true);
   assert.equal(apiBuildingUrl?.searchParams.get("key"), "vworld-server-only-key");
   assert.equal(apiBuildingUrl?.searchParams.has("DOMAIN"), false);
+  assert.equal(apiBuildingUrl?.searchParams.get("service"), "WFS");
+  assert.equal(apiBuildingUrl?.searchParams.get("request"), "GetFeature");
+  assert.equal(apiBuildingUrl?.searchParams.get("srsname"), "EPSG:3857");
 });
 
 test("does not send a browser referer to the API WFS fallback", async () => {
@@ -127,7 +130,7 @@ test("does not send a browser referer to the API WFS fallback", async () => {
     env,
   );
 
-  const apiBuildingRequest = requests.find((request) => request.parsed.hostname === "api.vworld.kr" && request.parsed.searchParams.get("TYPENAME") === "lt_c_spbd");
+  const apiBuildingRequest = requests.find((request) => request.parsed.hostname === "api.vworld.kr" && request.parsed.searchParams.get("typename") === "lt_c_spbd");
   assert.equal(apiBuildingRequest?.referer, null);
 });
 
@@ -166,7 +169,10 @@ test("returns a verified facade gap instead of promoting official road right-of-
 
 test("identifies the official upstream that is unavailable without fabricating canyon evidence", async () => {
   const worker = createWorker({
-    fetchImpl: async (url) => new Response("unavailable", { status: String(url).includes("TYPENAME=lt_c_spbd") ? 502 : 200 }),
+    fetchImpl: async (url) => {
+      const typeName = new URL(url).searchParams.get("TYPENAME") ?? new URL(url).searchParams.get("typename");
+      return new Response("unavailable", { status: typeName === "lt_c_spbd" ? 502 : 200 });
+    },
   });
   const response = await worker.fetch(
     new Request("https://bridge.example/api/canyon-width?lat=0&lon=-0.00006", {

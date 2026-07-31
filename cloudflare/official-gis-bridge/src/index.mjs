@@ -193,15 +193,29 @@ async function fetchJson(fetchImpl, url, referer, source) {
 }
 
 function wfsRequests({ typeName, maxFeatures, bbox, propertyName, env }) {
-  const common = {
+  const mapCommon = {
     SERVICE: "WFS", REQUEST: "GetFeature", VERSION: "1.1.0", TYPENAME: typeName,
     MAXFEATURES: maxFeatures, SRSNAME: "EPSG:3857", OUTPUT: "application/json", EXCEPTIONS: "text/xml", BBOX: bbox,
   };
-  if (propertyName) common.PROPERTYNAME = propertyName;
+  const apiCommon = {
+    service: "WFS", request: "GetFeature", version: "1.1.0", typename: typeName,
+    maxfeatures: maxFeatures, srsname: "EPSG:3857", output: "application/json", exceptions: "text/xml", bbox,
+  };
+  if (propertyName) {
+    mapCommon.PROPERTYNAME = propertyName;
+    apiCommon.propertyname = propertyName;
+  }
+  const registeredDomain = (() => {
+    try {
+      return new URL(env.VWORLD_REFERER).host;
+    } catch {
+      return env.VWORLD_REFERER;
+    }
+  })();
   const mapUrl = new URL(MAP_WFS_ENDPOINT);
-  mapUrl.search = new URLSearchParams({ ...common, APIKEY: env.VWORLD_DATA_API_KEY, DOMAIN: env.VWORLD_REFERER }).toString();
+  mapUrl.search = new URLSearchParams({ ...mapCommon, APIKEY: env.VWORLD_DATA_API_KEY, DOMAIN: registeredDomain }).toString();
   const apiUrl = new URL(API_WFS_ENDPOINT);
-  apiUrl.search = new URLSearchParams({ ...common, key: env.VWORLD_DATA_API_KEY }).toString();
+  apiUrl.search = new URLSearchParams({ ...apiCommon, key: env.VWORLD_DATA_API_KEY }).toString();
   return [
     { url: mapUrl, sourceOrigin: "vworld_map_wfs" },
     { url: apiUrl, sourceOrigin: "vworld_api_wfs" },

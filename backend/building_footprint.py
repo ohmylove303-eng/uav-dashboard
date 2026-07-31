@@ -691,6 +691,16 @@ def _annotate_footprint_result(
     payload["source_status"] = classified["status"]
     payload["official_footprint_available"] = classified["official_footprint_available"]
     payload["cache_receipt_validated"] = classified["cache_receipt_validated"]
+    verified_cache_selection = bool(
+        classified["cache_receipt_validated"]
+        and payload.get("cache_point_inside") is True
+    )
+    payload["official_geometry_receipt"] = bool(
+        payload.get("official_geometry_receipt") or verified_cache_selection
+    )
+    payload["official_selection_match"] = bool(
+        payload.get("official_selection_match") or verified_cache_selection
+    )
     payload["confidence"] = confidence
     payload["building_confidence"] = confidence
     payload["field_sources"] = payload.get("field_sources") or _build_uniform_field_sources(
@@ -973,6 +983,7 @@ def _match_cached_footprint(lat: float, lon: float, max_distance_deg: float = 0.
                 "geometry": geometry,
                 "properties": properties,
                 "source_origin": entry.get("source_origin") or entry.get("source"),
+                "cache_point_inside": point_in_polygon,
             }
 
     if best_entry and best_score is not None:

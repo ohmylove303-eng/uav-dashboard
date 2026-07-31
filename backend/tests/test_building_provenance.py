@@ -71,9 +71,37 @@ class BuildingFootprintProvenanceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["source_status"], "official_verified")
         self.assertTrue(result["official_footprint_available"])
+        self.assertTrue(result["official_geometry_receipt"])
+        self.assertTrue(result["official_selection_match"])
         self.assertTrue(result["official_building_data"])
         self.assertEqual(result["field_sources"]["height_m"]["status"], "official_verified")
         self.assertEqual(result["field_sources"]["far_percent"]["status"], "official_verified")
+
+    async def test_verified_cache_requires_click_inside_geometry_for_selection_receipt(self) -> None:
+        cache_entry = {
+            "center": {"lat": 37.5665, "lon": 126.9780},
+            "geometry": [
+                [126.9780, 37.5665],
+                [126.9785, 37.5665],
+                [126.9785, 37.5670],
+                [126.9780, 37.5665],
+            ],
+            "properties": {"buld_nm": "서울특별시청", "gro_flo_co": 6},
+            "source": "vworld_wfs",
+            "source_origin": "vworld_wfs",
+        }
+
+        with (
+            patch.dict(building_footprint.os.environ, {}, clear=True),
+            patch.object(building_footprint, "_load_footprint_cache", return_value=[cache_entry]),
+            patch.object(building_footprint, "_lookup_osm_fallback_sync", return_value=None),
+            patch.object(building_footprint, "_resolve_vworld_api_key", return_value=None),
+        ):
+            result = await building_footprint.lookup_building_footprint(37.5664, 126.9782)
+
+        self.assertTrue(result["official_footprint_available"])
+        self.assertFalse(result["official_geometry_receipt"])
+        self.assertFalse(result["official_selection_match"])
 
     async def test_live_vworld_keeps_unverified_cached_far_bcr_labeled(self) -> None:
         cache_entry = {

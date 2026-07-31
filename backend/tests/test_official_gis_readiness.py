@@ -34,6 +34,7 @@ class OfficialGisReadinessTests(unittest.TestCase):
             patch.object(main, "OFFICIAL_GIS_BRIDGE_URL", ""),
             patch.object(main, "OFFICIAL_GIS_BRIDGE_TOKEN", ""),
             patch.object(main, "_vworld_api_key", return_value=None),
+            patch.object(main, "molit_building_hub_key_configured", return_value=False),
         ):
             response = self.client.get("/api/official-gis/readiness")
 
@@ -46,6 +47,7 @@ class OfficialGisReadinessTests(unittest.TestCase):
                 "vworld_server_data_api_key",
                 "official_gis_bridge_url",
                 "official_gis_bridge_token",
+                "molit_building_hub_service_key",
             ],
         )
         self.assertEqual(payload["facade_gap_policy"], "verified_official_geometry_only")
@@ -56,6 +58,7 @@ class OfficialGisReadinessTests(unittest.TestCase):
             patch.object(main, "OFFICIAL_GIS_BRIDGE_URL", "https://bridge.example.test/api/canyon-width"),
             patch.object(main, "OFFICIAL_GIS_BRIDGE_TOKEN", "server-only-token"),
             patch.object(main, "_vworld_api_key", return_value="server-only-vworld-key"),
+            patch.object(main, "molit_building_hub_key_configured", return_value=True),
         ):
             response = self.client.get("/api/official-gis/readiness")
 

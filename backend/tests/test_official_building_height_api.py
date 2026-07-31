@@ -60,6 +60,48 @@ class OfficialBuildingHeightRouteTests(unittest.TestCase):
         self.assertFalse(payload["official_available"])
         self.assertEqual(payload["receipt"]["kind"], "official_floor_count_derived")
 
+    def test_building_hub_height_is_used_only_after_the_verified_click_is_enriched(self):
+        vworld_footprint = {
+            "available": True,
+            "official_footprint_available": True,
+            "official_geometry_receipt": True,
+            "official_selection_match": True,
+            "source": "vworld_wfs",
+            "source_chain": ["vworld_wfs"],
+            "display_name": "서울특별시청",
+            "properties": {"bd_mgt_sn": "1114010300100310000019224", "buld_nm": "서울특별시청"},
+        }
+        enriched = {
+            **vworld_footprint,
+            "source_chain": ["vworld_wfs", "molit_building_hub"],
+            "properties": {
+                **vworld_footprint["properties"],
+                "buld_hg": 41.65,
+                "gro_flo_co": 6,
+                "far_percent": 318.7,
+                "bcr_percent": 52.4,
+            },
+            "field_sources": {
+                "height_m": {"source": "molit_building_hub", "status": "official_verified", "property_key": "heit", "value": 41.65},
+                "floor_count": {"source": "molit_building_hub", "status": "official_verified", "property_key": "grndFlrCnt", "value": 6},
+                "far_percent": {"source": "molit_building_hub", "status": "official_verified", "property_key": "vlRat", "value": 318.7},
+                "bcr_percent": {"source": "molit_building_hub", "status": "official_verified", "property_key": "bcRat", "value": 52.4},
+            },
+        }
+
+        with (
+            patch.object(main, "lookup_building_footprint", AsyncMock(return_value=vworld_footprint)),
+            patch.object(main, "enrich_verified_footprint", AsyncMock(return_value=enriched)),
+        ):
+            response = self.client.get("/api/building-height", params={"lat": 37.5665, "lon": 126.9780})
+
+        payload = response.json()
+        self.assertEqual(payload["estimated_height_m"], 41.6)
+        self.assertEqual(payload["estimated_floors"], 6)
+        self.assertEqual(payload["far_percent"], 318.7)
+        self.assertEqual(payload["bcr_percent"], 52.4)
+        self.assertEqual(payload["source_chain"], ["vworld_wfs", "molit_building_hub", "official_building_height"])
+
 
 if __name__ == "__main__":
     unittest.main()

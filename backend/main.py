@@ -20,6 +20,7 @@ import re
 import secrets
 import time
 from urban_canyon import measure_facade_gap
+from official_building_registry import enrich_verified_footprint, service_key_configured as molit_building_hub_key_configured
 
 app = FastAPI(
     title="UAV Urban Ops API",
@@ -635,6 +636,7 @@ def _official_gis_readiness() -> Dict[str, Any]:
     vworld_data_key_configured = bool(_vworld_api_key())
     bridge_url_configured = bool(OFFICIAL_GIS_BRIDGE_URL)
     bridge_token_configured = bool(OFFICIAL_GIS_BRIDGE_TOKEN)
+    building_hub_key_configured = molit_building_hub_key_configured()
     missing = []
     if not vworld_data_key_configured:
         missing.append("vworld_server_data_api_key")
@@ -642,6 +644,8 @@ def _official_gis_readiness() -> Dict[str, Any]:
         missing.append("official_gis_bridge_url")
     if not bridge_token_configured:
         missing.append("official_gis_bridge_token")
+    if not building_hub_key_configured:
+        missing.append("molit_building_hub_service_key")
 
     return {
         "status": "ready" if not missing else "hold",
@@ -649,6 +653,7 @@ def _official_gis_readiness() -> Dict[str, Any]:
         "vworld_referer_source": "environment" if (os.getenv("VWORLD_REFERER") or os.getenv("VWORLD_DOMAIN")) else "default",
         "official_gis_bridge_url_configured": bridge_url_configured,
         "official_gis_bridge_token_configured": bridge_token_configured,
+        "molit_building_hub_key_configured": building_hub_key_configured,
         "facade_gap_policy": "verified_official_geometry_only",
         "missing_prerequisites": missing,
     }
@@ -2603,9 +2608,14 @@ def _build_official_building_height_evidence(footprint: Optional[Dict[str, Any]]
 # Building Height API
 try:
     from building_height import predict_building_height
+
+    async def _lookup_building_selection(lat: float, lon: float) -> Dict[str, Any]:
+        footprint = await lookup_building_footprint(lat, lon)
+        return await enrich_verified_footprint(footprint)
+
     @app.get("/api/building-height")
     async def get_building_height(lat: float, lon: float):
-        footprint = await lookup_building_footprint(lat, lon)
+        footprint = await _lookup_building_selection(lat, lon)
         official_height = _build_official_building_height_evidence(footprint)
         if official_height:
             return official_height
@@ -2619,7 +2629,7 @@ try:
 
     @app.get("/api/building-footprint")
     async def get_building_footprint(lat: float, lon: float):
-        return await lookup_building_footprint(lat, lon)
+        return await _lookup_building_selection(lat, lon)
 
     @app.post("/api/building-footprint/cache")
     async def seed_building_footprint(payload: FootprintCacheRequest):
