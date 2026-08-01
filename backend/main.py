@@ -654,6 +654,7 @@ def _official_gis_readiness() -> Dict[str, Any]:
         "official_gis_bridge_url_configured": bridge_url_configured,
         "official_gis_bridge_token_configured": bridge_token_configured,
         "molit_building_hub_key_configured": building_hub_key_configured,
+        "building_hub_key_resolution": "semantic_aliases_v1",
         "facade_gap_policy": "verified_official_geometry_only",
         "missing_prerequisites": missing,
     }
