@@ -36,6 +36,15 @@ class OfficialBuildingRegistryError(RuntimeError):
     """A structured upstream failure that never includes a service key."""
 
 
+def _building_hub_upstream_status_reason(status_code: int) -> str:
+    """Expose a safe HTTP classification without returning an upstream body."""
+
+    status = int(status_code)
+    if 100 <= status <= 599:
+        return f"molit_building_hub_upstream_http_{status}"
+    return "molit_building_hub_upstream_error"
+
+
 def service_key_configured() -> bool:
     return bool(_resolve_service_key())
 
@@ -133,7 +142,9 @@ async def _fetch_title_records(query: Dict[str, str], service_key: str) -> List[
         raise OfficialBuildingRegistryError("molit_building_hub_network_error") from error
 
     if response.status_code != 200:
-        raise OfficialBuildingRegistryError("molit_building_hub_upstream_error")
+        raise OfficialBuildingRegistryError(
+            _building_hub_upstream_status_reason(response.status_code)
+        )
     try:
         payload = response.json()
     except ValueError as error:

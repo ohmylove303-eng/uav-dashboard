@@ -50,6 +50,12 @@ class OfficialBuildingRegistryTests(unittest.IsolatedAsyncioTestCase):
                 official_building_registry._resolve_service_key(), "server-only-key"
             )
 
+    def test_building_hub_upstream_status_is_classified_without_response_body(self):
+        self.assertEqual(
+            official_building_registry._building_hub_upstream_status_reason(403),
+            "molit_building_hub_upstream_http_403",
+        )
+
     async def test_verified_click_is_enriched_from_single_official_registry_record(self):
         footprint = {
             "available": True,
