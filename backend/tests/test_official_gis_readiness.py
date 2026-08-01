@@ -51,7 +51,7 @@ class OfficialGisReadinessTests(unittest.TestCase):
             ],
         )
         self.assertEqual(payload["facade_gap_policy"], "verified_official_geometry_only")
-        self.assertEqual(payload["building_hub_key_resolution"], "semantic_aliases_v1")
+        self.assertEqual(payload["building_hub_key_resolution"], "semantic_aliases_v2")
         self.assertNotIn("browser-key", str(payload))
 
     def test_readiness_reports_ready_only_for_server_side_bridge_configuration(self):
