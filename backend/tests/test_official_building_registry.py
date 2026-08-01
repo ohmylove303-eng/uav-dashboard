@@ -39,6 +39,17 @@ class OfficialBuildingRegistryTests(unittest.IsolatedAsyncioTestCase):
                 official_building_registry._resolve_service_key(), "server-only-key"
             )
 
+    def test_semantic_legacy_building_hub_key_alias_is_recognized(self):
+        with patch.dict(
+            official_building_registry.os.environ,
+            {"MOLIT_BLDG_HUB_CREDENTIAL_KEY": "server-only-key"},
+            clear=True,
+        ):
+            self.assertTrue(official_building_registry.service_key_configured())
+            self.assertEqual(
+                official_building_registry._resolve_service_key(), "server-only-key"
+            )
+
     async def test_verified_click_is_enriched_from_single_official_registry_record(self):
         footprint = {
             "available": True,

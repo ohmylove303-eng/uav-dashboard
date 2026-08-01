@@ -21,6 +21,12 @@ BUILDING_HUB_ENV_KEYS = (
     "MOLIT_BUILDING_API_KEY",
     "DATA_GO_KR_BUILDING_HUB_SERVICE_KEY",
     "DATA_GO_KR_BUILDING_HUB_API_KEY",
+    "BUILDING_HUB_SERVICE_KEY",
+    "BUILDING_HUB_API_KEY",
+    "BUILDING_HUB_KEY",
+)
+_SEMANTIC_BUILDING_HUB_ENV_KEY = re.compile(
+    r"^(?:MOLIT|DATA_GO_KR)_[A-Z0-9_]*(?:BUILDING|BLDG|REGISTRY)[A-Z0-9_]*(?:SERVICE_)?KEY$"
 )
 BUILDING_HUB_TIMEOUT_S = float(os.getenv("MOLIT_BUILDING_HUB_TIMEOUT_S", "6.0"))
 _PNU_PLAT_TO_HUB_PLAT = {"1": "0", "2": "1", "3": "2"}
@@ -35,7 +41,13 @@ def service_key_configured() -> bool:
 
 
 def _resolve_service_key() -> Optional[str]:
-    for env_key in BUILDING_HUB_ENV_KEYS:
+    semantic_aliases = sorted(
+        env_key
+        for env_key in os.environ
+        if env_key not in BUILDING_HUB_ENV_KEYS
+        and _SEMANTIC_BUILDING_HUB_ENV_KEY.fullmatch(env_key)
+    )
+    for env_key in (*BUILDING_HUB_ENV_KEYS, *semantic_aliases):
         value = (os.getenv(env_key) or "").strip()
         if value:
             return value
