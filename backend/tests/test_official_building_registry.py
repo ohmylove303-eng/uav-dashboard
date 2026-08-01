@@ -50,6 +50,13 @@ class OfficialBuildingRegistryTests(unittest.IsolatedAsyncioTestCase):
                 official_building_registry._resolve_service_key(), "server-only-key"
             )
 
+    def test_encoded_data_go_service_key_is_normalized_before_request(self):
+        encoded_key = "abc%2Bdef%2Fghi%3D"
+
+        normalized_key = official_building_registry._normalize_service_key(encoded_key)
+
+        self.assertEqual(normalized_key, "abc+def/ghi=")
+
     def test_building_hub_upstream_status_is_classified_without_response_body(self):
         self.assertEqual(
             official_building_registry._building_hub_upstream_status_reason(403),

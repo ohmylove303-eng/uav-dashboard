@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 from typing import Any, Dict, Iterable, List, Optional
+from urllib.parse import unquote
 
 import httpx
 
@@ -49,6 +50,12 @@ def service_key_configured() -> bool:
     return bool(_resolve_service_key())
 
 
+def _normalize_service_key(value: str) -> str:
+    """Accept either Data.go's Encoding or Decoding service-key form."""
+
+    return unquote(value)
+
+
 def _resolve_service_key() -> Optional[str]:
     semantic_aliases = sorted(
         env_key
@@ -59,7 +66,7 @@ def _resolve_service_key() -> Optional[str]:
     for env_key in (*BUILDING_HUB_ENV_KEYS, *semantic_aliases):
         value = (os.getenv(env_key) or "").strip()
         if value:
-            return value
+            return _normalize_service_key(value)
     return None
 
 
