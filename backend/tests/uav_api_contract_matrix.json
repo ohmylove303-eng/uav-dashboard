@@ -1,0 +1,146 @@
+{
+  "contract_version": 1,
+  "semantic_owner": "render:uav-dashboard",
+  "content_type": "application/json",
+  "selection_id": {
+    "format": "00000000-0000-4000-8000-000000000003",
+    "format_kind": "uuid",
+    "rule": "browser-generated input echoed unchanged by every read/evaluate surface"
+  },
+  "correlation_id": {
+    "rule": "backend-generated on evaluate only; client input is rejected"
+  },
+  "evaluation_statuses": ["GO", "RESTRICT", "NO_GO", "HOLD"],
+  "endpoints": [
+    {
+      "id": "building_footprint",
+      "method": "GET",
+      "path": "/api/building-footprint?lat=37.5662952&lon=126.9779451&selection_id=00000000-0000-4000-8000-000000000003",
+      "source_chain_path": "source_chain",
+      "official_available_path": "official_available",
+      "selection_id_path": "selection_id",
+      "correlation_id": "forbidden",
+      "status_path": "status",
+      "unavailability_reason_path": "reason"
+    },
+    {
+      "id": "building_height",
+      "method": "GET",
+      "path": "/api/building-height?lat=37.5662952&lon=126.9779451&selection_id=00000000-0000-4000-8000-000000000003",
+      "source_chain_path": "source_chain",
+      "official_available_path": "official_available",
+      "selection_id_path": "selection_id",
+      "correlation_id": "forbidden",
+      "status_path": "status",
+      "unavailability_reason_path": "reason"
+    },
+    {
+      "id": "road_width",
+      "method": "GET",
+      "path": "/api/road-width?lat=37.5662952&lon=126.9779451&selection_id=00000000-0000-4000-8000-000000000003",
+      "source_chain_path": "source_chain",
+      "official_available_path": "official_available",
+      "selection_id_path": "selection_id",
+      "correlation_id": "forbidden",
+      "status_path": "status",
+      "unavailability_reason_path": "reason"
+    },
+    {
+      "id": "canyon_width",
+      "method": "GET",
+      "path": "/api/canyon-width?lat=37.5662952&lon=126.9779451&selection_id=00000000-0000-4000-8000-000000000003",
+      "source_chain_path": "source_chain",
+      "official_available_path": "official_available",
+      "selection_id_path": "selection_id",
+      "correlation_id": "forbidden",
+      "status_path": "status",
+      "unavailability_reason_path": "reason"
+    },
+    {
+      "id": "weather",
+      "method": "GET",
+      "path": "/api/weather?lat=37.5662952&lon=126.9779451&selection_id=00000000-0000-4000-8000-000000000003",
+      "source_chain_path": "source_chain",
+      "official_available_path": "official_available",
+      "selection_id_path": "selection_id",
+      "correlation_id": "forbidden",
+      "status_path": "status",
+      "unavailability_reason_path": "reason",
+      "authoritative_weather_required": true
+    },
+    {
+      "id": "evaluate",
+      "method": "POST",
+      "path": "/api/evaluate",
+      "body": {
+        "latitude": 37.5662952,
+        "longitude": 126.9779451,
+        "selection_id": "00000000-0000-4000-8000-000000000003"
+      },
+      "source_chain_path": "source_chain",
+      "official_available_path": "official_available",
+      "selection_id_path": "selection_id",
+      "correlation_id": "required",
+      "correlation_id_path": "correlation_id",
+      "status_path": "final_judgment",
+      "hold_reason_path": "input_quality.reasons"
+    },
+    {
+      "id": "building_footprint_cache_public",
+      "method": "POST",
+      "path": "/api/building-footprint/cache",
+      "body": {
+        "lat": 37.5662952,
+        "lon": 126.9779451,
+        "geometry": [[126.9779, 37.5662], [126.9780, 37.5662], [126.9780, 37.5663], [126.9779, 37.5663], [126.9779, 37.5662]],
+        "source": "contract_probe"
+      },
+      "expected_http_status": 401,
+      "source_chain_path": "source_chain",
+      "official_available_path": "official_available",
+      "selection_id_path": null,
+      "correlation_id": "forbidden",
+      "status_path": "status",
+      "unavailability_reason_path": "reason",
+      "expected_reason": "cache_write_auth_required"
+    }
+  ],
+  "failure_probes": [
+    {
+      "id": "registry_401",
+      "path": "/api/building-height?lat=37.5662952&lon=126.9779451&selection_id=00000000-0000-4000-8000-000000000003&contract_fixture=registry_401",
+      "expected_status": "unavailable",
+      "expected_reason": "official_registry_unavailable"
+    },
+    {
+      "id": "bridge_502",
+      "path": "/api/canyon-width?lat=37.5662952&lon=126.9779451&selection_id=00000000-0000-4000-8000-000000000003&contract_fixture=bridge_502",
+      "expected_status": "unavailable",
+      "expected_reason": "official_gis_bridge_upstream_502"
+    },
+    {
+      "id": "bridge_520",
+      "path": "/api/canyon-width?lat=37.5662952&lon=126.9779451&selection_id=00000000-0000-4000-8000-000000000003&contract_fixture=bridge_520",
+      "expected_status": "unavailable",
+      "expected_reason": "official_gis_bridge_upstream_520"
+    },
+    {
+      "id": "non_authoritative_weather_hold",
+      "method": "POST",
+      "path": "/api/evaluate?contract_fixture=non_authoritative_weather",
+      "body": {
+        "latitude": 37.5662952,
+        "longitude": 126.9779451,
+        "selection_id": "00000000-0000-4000-8000-000000000003"
+      },
+      "expected_status": "HOLD",
+      "expected_reason": "weather:non_authoritative_weather"
+    }
+  ],
+  "adapter_characterization": {
+    "frontend_candidate": "read-only",
+    "pages_and_local_cache_write_expected_status": 405,
+    "todo_3_enforcement": "render-only",
+    "browser_runtime_forbidden_names": ["UAV_CACHE_WRITE_TOKEN"]
+  }
+}

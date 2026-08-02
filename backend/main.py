@@ -6,7 +6,7 @@
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta, timezone
@@ -28,6 +28,26 @@ app = FastAPI(
     version="2.2.0"
 )
 
+CACHE_WRITE_TOKEN_ENV_KEY = "UAV_CACHE_WRITE_TOKEN"
+CACHE_WRITE_PATH = "/api/building-footprint/cache"
+
+
+def _cache_write_rejection(status_code: int, reason: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "status": "unavailable",
+            "reason": reason,
+            "source_chain": ["render_internal_cache"],
+            "official_available": False,
+            "audit_receipt": {
+                "event": "building_footprint_cache_write",
+                "outcome": "rejected",
+                "reason": reason,
+            },
+        },
+    )
+
 # Static 폴더 마운트
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -42,7 +62,19 @@ app.add_middleware(
 
 @app.middleware("http")
 async def add_no_cache_header(request, call_next):
-    response = await call_next(request)
+    if request.method == "POST" and request.url.path == CACHE_WRITE_PATH:
+        configured_token = (os.getenv(CACHE_WRITE_TOKEN_ENV_KEY) or "").strip()
+        if not configured_token:
+            response = _cache_write_rejection(503, "cache_write_auth_unavailable")
+        else:
+            supplied_authorization = request.headers.get("authorization") or ""
+            expected_authorization = f"Bearer {configured_token}"
+            if not secrets.compare_digest(supplied_authorization, expected_authorization):
+                response = _cache_write_rejection(401, "cache_write_auth_required")
+            else:
+                response = await call_next(request)
+    else:
+        response = await call_next(request)
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
@@ -229,6 +261,8 @@ class EvaluationRequest(BaseModel):
     road_evidence: Optional[Dict[str, Any]] = Field(None, description="도로 폭 근거 객체")
     canyon_evidence: Optional[Dict[str, Any]] = Field(None, description="건물 간 이격폭 근거 객체")
     weather_evidence: Optional[Dict[str, Any]] = Field(None, description="기상 근거 객체")
+    selection_id: Optional[str] = Field(None, description="브라우저 선택 상관 ID")
+    correlation_id: Optional[str] = Field(None, description="백엔드 전용 판정 스냅샷 ID")
 
 
 class FootprintCacheRequest(BaseModel):
@@ -237,6 +271,26 @@ class FootprintCacheRequest(BaseModel):
     geometry: List[List[float]]
     properties: Optional[Dict] = None
     source: str = "frontend_seed"
+
+
+def _contains_credential_shaped_data(value: Any) -> bool:
+    credential_names = {
+        "apikey",
+        "authorization",
+        "bearertoken",
+        "credential",
+        "password",
+        "secret",
+    }
+    if isinstance(value, list):
+        return any(_contains_credential_shaped_data(item) for item in value)
+    if not isinstance(value, dict):
+        return False
+    for key, nested_value in value.items():
+        normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
+        if normalized_key in credential_names or _contains_credential_shaped_data(nested_value):
+            return True
+    return False
 
 class EvaluationResponse(BaseModel):
     timestamp: str
@@ -265,6 +319,9 @@ class EvaluationResponse(BaseModel):
     canyon_evidence: Optional[Dict] = None
     weather_evidence: Optional[Dict] = None
     input_quality: Optional[Dict] = None
+    official_available: bool = False
+    selection_id: Optional[str] = None
+    correlation_id: Optional[str] = None
 
 
 class RoutePoint(BaseModel):
@@ -351,6 +408,28 @@ def _normalize_source_chain(*parts: Any) -> List[str]:
             chain.append(token)
             seen.add(token)
     return chain
+
+
+def _attach_api_contract(
+    payload: Dict[str, Any],
+    selection_id: Optional[str],
+    official_available: Optional[bool] = None,
+    status: Optional[str] = None,
+) -> Dict[str, Any]:
+    contracted = dict(payload)
+    is_official = bool(
+        official_available
+        if official_available is not None
+        else contracted.get("official_available", contracted.get("official_footprint_available", False))
+    )
+    is_available = bool(contracted.get("available", is_official))
+    contracted["official_available"] = is_official
+    contracted["status"] = status or contracted.get("status") or (
+        "official_verified" if is_official else ("estimated" if is_available else "unavailable")
+    )
+    contracted["selection_id"] = selection_id
+    contracted["source_chain"] = _normalize_source_chain(contracted.get("source_chain"), contracted.get("source"))
+    return contracted
 
 
 def _parse_source_chain(source: Optional[str]) -> List[str]:
@@ -2040,8 +2119,14 @@ async def get_kp_index_api():
     return {"kp_index": kp}
 
 @app.get("/api/road-width")
-async def get_road_width_api(lat: float, lon: float, road_name: Optional[str] = None):
-    return await fetch_road_width_evidence(lat, lon, road_name=road_name)
+async def get_road_width_api(
+    lat: float,
+    lon: float,
+    road_name: Optional[str] = None,
+    selection_id: Optional[str] = None,
+):
+    evidence = await fetch_road_width_evidence(lat, lon, road_name=road_name)
+    return _attach_api_contract(evidence, selection_id)
 
 
 @app.get("/api/canyon-width")
@@ -2049,16 +2134,22 @@ async def get_canyon_width_api(
     lat: float,
     lon: float,
     road_name: Optional[str] = None,
+    selection_id: Optional[str] = None,
     authorization: Optional[str] = Header(default=None),
 ):
     if OFFICIAL_GIS_BRIDGE_INBOUND_TOKEN:
         expected = f"Bearer {OFFICIAL_GIS_BRIDGE_INBOUND_TOKEN}"
         if not authorization or not secrets.compare_digest(authorization, expected):
             raise HTTPException(status_code=401, detail="official GIS bridge authorization required")
-    return await fetch_canyon_width_evidence(lat, lon, road_name=road_name)
+    evidence = await fetch_canyon_width_evidence(lat, lon, road_name=road_name)
+    return _attach_api_contract(evidence, selection_id)
 
 @app.get("/api/weather")
-async def get_weather_api(lat: float = 37.5665, lon: float = 126.9780):
+async def get_weather_api(
+    lat: float = 37.5665,
+    lon: float = 126.9780,
+    selection_id: Optional[str] = None,
+):
     w = await fetch_weather_safe(lat, lon)
     kp = await fetch_kp_index_safe()
     w["kp_index"] = kp
@@ -2083,10 +2174,31 @@ async def get_weather_api(lat: float = 37.5665, lon: float = 126.9780):
         w["source"] = f'{w.get("source", "open_meteo_surface")} + {", ".join(source_suffixes)}'
     w = _attach_weather_provenance(w, upper_air, wind_profiler)
     weather_evidence = _build_weather_evidence(w, upper_air, wind_profiler)
-    return {"weather": w, "weather_evidence": weather_evidence}
+    return _attach_api_contract(
+        {
+            "weather": w,
+            "weather_evidence": weather_evidence,
+            "source_chain": weather_evidence.get("source_chain", []),
+            "reason": weather_evidence.get("reason"),
+        },
+        selection_id,
+        official_available=bool(weather_evidence.get("authoritative")),
+        status=weather_evidence.get("status"),
+    )
 
 @app.post("/api/evaluate", response_model=EvaluationResponse)
 async def evaluate_flight(request: EvaluationRequest):
+    if request.correlation_id is not None:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "status": "unavailable",
+                "reason": "client_correlation_id_rejected",
+                "source_chain": ["render_validation"],
+                "official_available": False,
+                "selection_id": request.selection_id,
+            },
+        )
     # 1. Weather
     if request.wind_speed is not None:
         # 수동 입력 시
@@ -2294,6 +2406,9 @@ async def evaluate_flight(request: EvaluationRequest):
             canyon_evidence=canyon_evidence,
             weather_evidence=weather_evidence,
             input_quality=input_quality,
+            official_available=False,
+            selection_id=request.selection_id,
+            correlation_id=None,
         )
 
     building_canyon_weight = _resolve_building_canyon_weight(
@@ -2394,7 +2509,10 @@ async def evaluate_flight(request: EvaluationRequest):
             "density": weather.get("upper_air_density")
         } if selected_layer else None,
         profile_layers=profile_layers,
-        stale_cache=stale_cache
+        stale_cache=stale_cache,
+        official_available=True,
+        selection_id=request.selection_id,
+        correlation_id=secrets.token_urlsafe(18),
     )
 
 
@@ -2615,12 +2733,12 @@ try:
         return await enrich_verified_footprint(footprint)
 
     @app.get("/api/building-height")
-    async def get_building_height(lat: float, lon: float):
+    async def get_building_height(lat: float, lon: float, selection_id: Optional[str] = None):
         footprint = await _lookup_building_selection(lat, lon)
         official_height = _build_official_building_height_evidence(footprint)
         if official_height:
-            return official_height
-        return predict_building_height(lat, lon)
+            return _attach_api_contract(official_height, selection_id)
+        return _attach_api_contract(predict_building_height(lat, lon), selection_id)
 except ImportError:
     pass
 
@@ -2629,18 +2747,34 @@ try:
     from building_footprint import _point_in_polygon, cache_building_footprint, lookup_building_footprint, lookup_official_building_collection
 
     @app.get("/api/building-footprint")
-    async def get_building_footprint(lat: float, lon: float):
-        return await _lookup_building_selection(lat, lon)
+    async def get_building_footprint(lat: float, lon: float, selection_id: Optional[str] = None):
+        footprint = await _lookup_building_selection(lat, lon)
+        return _attach_api_contract(footprint, selection_id)
 
     @app.post("/api/building-footprint/cache")
     async def seed_building_footprint(payload: FootprintCacheRequest):
-        return cache_building_footprint(
+        if _contains_credential_shaped_data(payload.properties):
+            return _cache_write_rejection(400, "credential_shaped_data_rejected")
+        cached = cache_building_footprint(
             payload.lat,
             payload.lon,
             payload.geometry,
             properties=payload.properties,
             source=payload.source,
         )
+        source_chain = _normalize_source_chain("render_internal_cache", cached.get("source_chain"))
+        return {
+            "status": "accepted",
+            "reason": "cache_write_recorded",
+            "source_chain": source_chain,
+            "official_available": bool(cached.get("official_footprint_available")),
+            "audit_receipt": {
+                "event": "building_footprint_cache_write",
+                "outcome": "accepted",
+                "receipt_id": secrets.token_hex(12),
+                "geometry_points": len(payload.geometry),
+            },
+        }
 except ImportError:
     pass
 
