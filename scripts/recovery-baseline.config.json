@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "dashboard": {
+    "shared_root": "/Volumes/SAMSUNG/Coding_Projects/uav-dashboard",
+    "candidate_root": "/Volumes/SAMSUNG/Coding_Projects/uav-dashboard-recovery-20260802",
+    "baseline_head": "8b59652139747478dbee3a2aa6063fd209d60e7b",
+    "expected_branch": "codex/uav-map-building-weather-recovery-20260802",
+    "quarantine": [
+      { "path": ".harness", "status": "excluded", "reason": "shared harness state" },
+      { "path": ".kiro", "status": "excluded", "reason": "shared agent state" },
+      { "path": ".codebase-memory", "status": "excluded", "reason": "generated index" },
+      { "path": ".omo", "status": "excluded", "reason": "shared planning and evidence state" },
+      { "path": "PROJECT_EXECUTION_RULES.md", "status": "excluded", "reason": "shared untracked policy file" },
+      { "path": ".clinerules", "status": "excluded", "reason": "shared untracked policy file" },
+      { "path": "frontend/dist", "status": "excluded", "reason": "generated frontend output" },
+      { "path": "frontend/node_modules", "status": "excluded", "reason": "generated dependencies" },
+      { "path": "backend/static/footprint_cache.json", "status": "excluded", "reason": "dirty runtime cache is not imported" },
+      { "path": "cloudflare/official-gis-bridge/.wrangler", "status": "excluded", "reason": "generated deployment state" },
+      { "path": "backend/official_gis_bridge.py", "status": "reviewed_exception_with_hash", "reason": "comparison-only reviewed behavior" },
+      { "path": "backend/tests/test_official_gis_bridge.py", "status": "reviewed_exception_with_hash", "reason": "comparison-only reviewed behavior" },
+      { "path": "backend/scripts/README_official_gis_bridge.md", "status": "excluded", "reason": "dirty bridge operator documentation" },
+      { "path": "backend/scripts/copy_official_gis_bridge_token.sh", "status": "excluded", "reason": "credential-handling script must never be copied or read" },
+      { "path": "backend/scripts/open_official_gis_tunnel.sh", "status": "excluded", "reason": "dirty local tunnel helper" },
+      { "path": "backend/scripts/run_official_gis_bridge.sh", "status": "excluded", "reason": "dirty local bridge runner" }
+    ]
+  },
+  "frontend": {
+    "shared_root": "/Volumes/SAMSUNG/Coding_Projects/uav-vercel",
+    "candidate_root": "/Volumes/SAMSUNG/Coding_Projects/uav-vercel-recovery-20260802",
+    "include_paths": [
+      ".assetsignore", ".clinerules", ".gitignore", ".vercelignore", "AGENTS.md",
+      "PROJECT_EXECUTION_RULES.md", "_worker.js", "app.bundle.js", "functions", "index.html",
+      "js", "no_fly_zones.json", "package-lock.json", "package.json", "playwright.config.mjs",
+      "runtime-config.js", "scripts", "server.mjs", "tests", "vercel.json"
+    ],
+    "excluded_paths": [
+      ".git", ".pages-stage", ".pages-stage/vworld.local.js",
+      ".pages-stage/official-footprint-cache.json", ".vercel", ".wrangler",
+      ".wrangler/cache/pages.json", ".codebase-memory", ".debug-journal.md", ".harness",
+      ".kiro", ".omo", "node_modules", "vworld.local.js", "cctv-vworld.env",
+      "official-footprint-cache.json", "tmp-cityhall-evaluate.png", "tmp-cityhall-summary.png",
+      "tmp-evaluation-evidence-chain.png", "tmp-preview-overlay.png",
+      "tmp-wave2-flight-3d-mobile.png", "tmp-wave2-inline-drawer-mobile.png",
+      "tmp-wave2-mobile.png", "tmp-wave2-simulator-mobile.png"
+    ]
+  },
+  "endpoint_semantic_owners": [
+    { "surface": "uav-vercel Pages UI", "owner": "static candidate manifest", "role": "render-only browser surface" },
+    { "surface": "Render /health and /api/*", "owner": "uav-dashboard Render", "role": "canonical building, weather, canyon, and evaluation JSON" },
+    { "surface": "official GIS bridge", "owner": "uav-official-gis-bridge Worker", "role": "server-to-server official geometry receipts" },
+    { "surface": "server.mjs, _worker.js, functions/[[path]].js", "owner": "schema-preserving adapters", "role": "no evaluator or official-data upgrade" }
+  ],
+  "deployment_and_rollback_identifiers": [
+    { "provider": "Render", "service": "uav-dashboard", "endpoint": "https://uav-dashboard.onrender.com", "deployment_id": null, "rollback_id": null, "source": "render.yaml; DEPLOY_GUIDE_RENDER.md; existing redacted evidence", "status": "service and endpoint discoverable; immutable deployment ID not discoverable read-only" },
+    { "provider": "Cloudflare Pages", "service": "uav-vercel", "endpoint": "https://uav-vercel.pages.dev", "deployment_id": null, "rollback_id": null, "source": "existing redacted .omo evidence", "status": "service endpoint discoverable; immutable deployment ID not discoverable read-only" },
+    { "provider": "Cloudflare Workers", "service": "uav-official-gis-bridge", "endpoint": null, "version_id": null, "rollback_id": null, "source": "cloudflare/official-gis-bridge/wrangler.toml", "status": "worker name discoverable; immutable version ID not discoverable read-only" },
+    { "provider": "Git", "service": "uav-dashboard candidate", "commit": "8b59652139747478dbee3a2aa6063fd209d60e7b", "rollback_id": "8b59652139747478dbee3a2aa6063fd209d60e7b", "source": "local refs", "status": "immutable local baseline" }
+  ],
+  "adversarial_classes": [
+    { "class": "malformed input", "status": "PASS", "evidence": "automated test rejects invalid JSON before write" },
+    { "class": "stale state", "status": "PASS", "evidence": "automated test rejects stale candidate content" },
+    { "class": "dirty worktree", "status": "PASS", "evidence": "shared status is recorded; dirty candidate is rejected before evidence write" },
+    { "class": "misleading success output", "status": "PASS", "evidence": "status PASS is written only after file-list and SHA equality" },
+    { "class": "repeated interruptions", "status": "PASS", "evidence": "automated test runs freeze twice and asserts stable IDs" },
+    { "class": "network/provider mutation", "status": "N/A", "reason": "Todo 1 uses read-only local identifiers and performs no deployment" },
+    { "class": "browser rendering", "status": "N/A", "reason": "Todo 1 is filesystem isolation tooling with no UI behavior" }
+  ],
+  "commands": [
+    { "scenario": "failing-first verified Todo 1 defects", "command": "disposable HEAD worktree probes: old CLI with current candidate config; old CLI with a clean descendant fixture and old expected_head pin; old CLI with a dirty dashboard fixture", "exit_code": 1, "result": "clean descendant exit 1 with dashboard candidate HEAD mismatch; dirty candidate exit 0 with output_exists=true and evidence status PASS" },
+    { "scenario": "focused manifest/isolation tests", "command": "node --test scripts/recovery-baseline.test.mjs", "exit_code": 0, "result": "7 passed, 0 failed" },
+    { "scenario": "existing relevant bridge suite", "command": "cd cloudflare/official-gis-bridge && npm test", "exit_code": 0, "result": "8 passed, 0 failed" },
+    { "scenario": "real manifest-driven frontend freeze", "command": "node scripts/recovery-baseline.mjs freeze --config scripts/recovery-baseline.config.json --output /Volumes/SAMSUNG/Coding_Projects/uav-dashboard/.omo/evidence/uav-map-building-weather-recovery/task-1-baseline-manifest.json", "exit_code": 0, "result": "PASS; clean committed candidate descends from immutable baseline and frontend SHA-256 digest matches source" },
+    { "scenario": "dirty dashboard candidate failure fixture", "command": "node --test --test-name-pattern='dirty dashboard candidate' scripts/recovery-baseline.test.mjs", "exit_code": 0, "result": "fixture CLI exited nonzero and ENOENT assertion proved no evidence output was created" },
+    { "scenario": "manual shared-root candidate failure", "command": "node scripts/recovery-baseline.mjs freeze --config <temporary-shared-root-config> --output <temporary-output>", "exit_code": 1, "result": "candidate root must differ from shared root; output_absent=true" },
+    { "scenario": "JSON contract assertions", "command": "node -e <task-1 evidence contract assertions> task-1-baseline-manifest.json", "exit_code": 0, "result": "json_contract_pass=true; frontend_files=40; dashboard_files=61; quarantine_entries=16; secret_scan=true" }
+  ],
+  "cleanup": [
+    { "target": "/tmp/uav-baseline-failure.*", "result": "removed; cleanup_absent=true" },
+    { "target": "node:test temporary fixture roots", "result": "removed by test finally blocks" },
+    { "target": "background PIDs and ports", "result": "none created" }
+  ]
+}
