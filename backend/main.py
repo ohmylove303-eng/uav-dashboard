@@ -3,12 +3,14 @@
 4중 게이트 시스템 + 실시간 기상 연동 + 기종별 맞춤 판정
 """
 
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, Field, StringConstraints
+from typing import Annotated, Optional, List, Dict, Any
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 import httpx
@@ -30,6 +32,12 @@ app = FastAPI(
 
 CACHE_WRITE_TOKEN_ENV_KEY = "UAV_CACHE_WRITE_TOKEN"
 CACHE_WRITE_PATH = "/api/building-footprint/cache"
+SelectionId = Annotated[
+    str,
+    StringConstraints(
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    ),
+]
 
 
 def _cache_write_rejection(status_code: int, reason: str) -> JSONResponse:
@@ -47,6 +55,21 @@ def _cache_write_rejection(status_code: int, reason: str) -> JSONResponse:
             },
         },
     )
+
+
+@app.exception_handler(RequestValidationError)
+async def typed_request_validation_error(request: Request, error: RequestValidationError) -> Response:
+    if any(tuple(item.get("loc", ()))[-1:] == ("selection_id",) for item in error.errors()):
+        return JSONResponse(
+            status_code=422,
+            content={
+                "status": "unavailable",
+                "reason": "invalid_selection_id",
+                "source_chain": ["render_validation"],
+                "official_available": False,
+            },
+        )
+    return await request_validation_exception_handler(request, error)
 
 # Static 폴더 마운트
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -261,7 +284,7 @@ class EvaluationRequest(BaseModel):
     road_evidence: Optional[Dict[str, Any]] = Field(None, description="도로 폭 근거 객체")
     canyon_evidence: Optional[Dict[str, Any]] = Field(None, description="건물 간 이격폭 근거 객체")
     weather_evidence: Optional[Dict[str, Any]] = Field(None, description="기상 근거 객체")
-    selection_id: Optional[str] = Field(None, description="브라우저 선택 상관 ID")
+    selection_id: Optional[SelectionId] = Field(None, description="브라우저 선택 상관 ID")
     correlation_id: Optional[str] = Field(None, description="백엔드 전용 판정 스냅샷 ID")
 
 
@@ -2123,7 +2146,7 @@ async def get_road_width_api(
     lat: float,
     lon: float,
     road_name: Optional[str] = None,
-    selection_id: Optional[str] = None,
+    selection_id: Optional[SelectionId] = None,
 ):
     evidence = await fetch_road_width_evidence(lat, lon, road_name=road_name)
     return _attach_api_contract(evidence, selection_id)
@@ -2134,7 +2157,7 @@ async def get_canyon_width_api(
     lat: float,
     lon: float,
     road_name: Optional[str] = None,
-    selection_id: Optional[str] = None,
+    selection_id: Optional[SelectionId] = None,
     authorization: Optional[str] = Header(default=None),
 ):
     if OFFICIAL_GIS_BRIDGE_INBOUND_TOKEN:
@@ -2148,7 +2171,7 @@ async def get_canyon_width_api(
 async def get_weather_api(
     lat: float = 37.5665,
     lon: float = 126.9780,
-    selection_id: Optional[str] = None,
+    selection_id: Optional[SelectionId] = None,
 ):
     w = await fetch_weather_safe(lat, lon)
     kp = await fetch_kp_index_safe()
@@ -2733,7 +2756,7 @@ try:
         return await enrich_verified_footprint(footprint)
 
     @app.get("/api/building-height")
-    async def get_building_height(lat: float, lon: float, selection_id: Optional[str] = None):
+    async def get_building_height(lat: float, lon: float, selection_id: Optional[SelectionId] = None):
         footprint = await _lookup_building_selection(lat, lon)
         official_height = _build_official_building_height_evidence(footprint)
         if official_height:
@@ -2747,7 +2770,7 @@ try:
     from building_footprint import _point_in_polygon, cache_building_footprint, lookup_building_footprint, lookup_official_building_collection
 
     @app.get("/api/building-footprint")
-    async def get_building_footprint(lat: float, lon: float, selection_id: Optional[str] = None):
+    async def get_building_footprint(lat: float, lon: float, selection_id: Optional[SelectionId] = None):
         footprint = await _lookup_building_selection(lat, lon)
         return _attach_api_contract(footprint, selection_id)
 

@@ -139,6 +139,148 @@ class ApiContractCharacterizationTests(unittest.TestCase):
         self.assertEqual(response.json()["reason"], "client_correlation_id_rejected")
 
 
+class SelectionIdValidationContractTests(unittest.TestCase):
+    def setUp(self):
+        self.client = TestClient(main.app)
+        self.malformed_selection_id = "not-a-uuid"
+        self.valid_selection_id = "00000000-0000-4000-8000-000000000003"
+        self.unavailable = {
+            "available": False,
+            "official_available": False,
+            "source_chain": ["contract_fixture"],
+            "reason": "fixture_unavailable",
+        }
+        self.weather = {
+            "available": True,
+            "authoritative": False,
+            "source": "open_meteo_surface",
+            "source_chain": ["open_meteo_surface"],
+            "stale_cache": False,
+        }
+
+    def assert_malformed_selection_rejected(self, response):
+        self.assertEqual(response.status_code, 422)
+        self.assertTrue(response.headers["content-type"].startswith("application/json"))
+        self.assertEqual(response.json()["status"], "unavailable")
+        self.assertEqual(response.json()["reason"], "invalid_selection_id")
+        self.assertEqual(response.json()["source_chain"], ["render_validation"])
+        self.assertFalse(response.json()["official_available"])
+        self.assertNotIn(self.malformed_selection_id, response.text)
+
+    def test_building_footprint_rejects_malformed_selection_id(self):
+        # Given: a malformed browser selection ID.
+        with patch.object(main, "_lookup_building_selection", AsyncMock(return_value=self.unavailable)):
+            # When: it reaches the building-footprint boundary.
+            response = self.client.get(
+                "/api/building-footprint",
+                params={"lat": 37.5665, "lon": 126.9780, "selection_id": self.malformed_selection_id},
+            )
+
+        # Then: no arbitrary string is accepted or echoed.
+        self.assert_malformed_selection_rejected(response)
+
+    def test_building_height_rejects_malformed_selection_id(self):
+        # Given: a malformed browser selection ID.
+        with patch.object(main, "_lookup_building_selection", AsyncMock(return_value=self.unavailable)):
+            # When: it reaches the building-height boundary.
+            response = self.client.get(
+                "/api/building-height",
+                params={"lat": 37.5665, "lon": 126.9780, "selection_id": self.malformed_selection_id},
+            )
+
+        # Then: no arbitrary string is accepted or echoed.
+        self.assert_malformed_selection_rejected(response)
+
+    def test_road_width_rejects_malformed_selection_id(self):
+        # Given: a malformed browser selection ID.
+        with patch.object(main, "fetch_road_width_evidence", AsyncMock(return_value=self.unavailable)):
+            # When: it reaches the road-width boundary.
+            response = self.client.get(
+                "/api/road-width",
+                params={"lat": 37.5665, "lon": 126.9780, "selection_id": self.malformed_selection_id},
+            )
+
+        # Then: no arbitrary string is accepted or echoed.
+        self.assert_malformed_selection_rejected(response)
+
+    def test_canyon_width_rejects_malformed_selection_id(self):
+        # Given: a malformed browser selection ID.
+        with patch.object(main, "fetch_canyon_width_evidence", AsyncMock(return_value=self.unavailable)):
+            # When: it reaches the canyon-width boundary.
+            response = self.client.get(
+                "/api/canyon-width",
+                params={"lat": 37.5665, "lon": 126.9780, "selection_id": self.malformed_selection_id},
+            )
+
+        # Then: no arbitrary string is accepted or echoed.
+        self.assert_malformed_selection_rejected(response)
+
+    def test_weather_rejects_malformed_selection_id(self):
+        # Given: a malformed browser selection ID.
+        with (
+            patch.object(main, "fetch_weather_safe", AsyncMock(return_value=self.weather)),
+            patch.object(main, "fetch_kp_index_safe", AsyncMock(return_value=3.0)),
+            patch.object(main, "fetch_kma_upper_air_profile_safe", AsyncMock(return_value=None)),
+            patch.object(main, "fetch_kma_wind_profiler_profile_safe", AsyncMock(return_value=None)),
+        ):
+            # When: it reaches the weather boundary.
+            response = self.client.get(
+                "/api/weather",
+                params={"lat": 37.5665, "lon": 126.9780, "selection_id": self.malformed_selection_id},
+            )
+
+        # Then: no arbitrary string is accepted or echoed.
+        self.assert_malformed_selection_rejected(response)
+
+    def test_evaluate_rejects_malformed_selection_id(self):
+        # Given: a malformed browser selection ID and deterministic unavailable evidence.
+        with (
+            patch.object(main, "fetch_weather_safe", AsyncMock(return_value=self.weather)),
+            patch.object(main, "fetch_kp_index_safe", AsyncMock(return_value=3.0)),
+            patch.object(main, "fetch_kma_upper_air_profile_safe", AsyncMock(return_value=None)),
+            patch.object(main, "fetch_kma_wind_profiler_profile_safe", AsyncMock(return_value=None)),
+            patch.object(main, "fetch_road_width_evidence", AsyncMock(return_value=self.unavailable)),
+            patch.object(main, "fetch_canyon_width_evidence", AsyncMock(return_value=self.unavailable)),
+        ):
+            # When: it reaches the evaluation body boundary.
+            response = self.client.post(
+                "/api/evaluate",
+                json={
+                    "latitude": 37.5665,
+                    "longitude": 126.9780,
+                    "selection_id": self.malformed_selection_id,
+                },
+            )
+
+        # Then: no arbitrary string is accepted or evaluated.
+        self.assert_malformed_selection_rejected(response)
+
+    def test_evaluate_preserves_valid_uuid_echo(self):
+        # Given: a valid UUID and deterministic unavailable evidence.
+        with (
+            patch.object(main, "fetch_weather_safe", AsyncMock(return_value=self.weather)),
+            patch.object(main, "fetch_kp_index_safe", AsyncMock(return_value=3.0)),
+            patch.object(main, "fetch_kma_upper_air_profile_safe", AsyncMock(return_value=None)),
+            patch.object(main, "fetch_kma_wind_profiler_profile_safe", AsyncMock(return_value=None)),
+            patch.object(main, "fetch_road_width_evidence", AsyncMock(return_value=self.unavailable)),
+            patch.object(main, "fetch_canyon_width_evidence", AsyncMock(return_value=self.unavailable)),
+        ):
+            # When: it reaches the evaluation body boundary.
+            response = self.client.post(
+                "/api/evaluate",
+                json={
+                    "latitude": 37.5665,
+                    "longitude": 126.9780,
+                    "selection_id": self.valid_selection_id,
+                },
+            )
+
+        # Then: the backend echoes the exact valid string and remains HOLD.
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["selection_id"], self.valid_selection_id)
+        self.assertEqual(response.json()["final_judgment"], "HOLD")
+
+
 class CacheWriteSecurityContractTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(main.app)
