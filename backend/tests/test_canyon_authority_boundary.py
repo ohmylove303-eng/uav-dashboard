@@ -73,7 +73,10 @@ def _weather() -> dict:
     }
 
 
-def _official_canyon(selection_id: Optional[str] = None) -> dict:
+def _official_canyon(
+    object_selection_id: Optional[str],
+    receipt_selection_id: Optional[str],
+) -> dict:
     receipt = {
         "kind": "official_canyon_width",
         "target_geometry_receipt": True,
@@ -90,9 +93,10 @@ def _official_canyon(selection_id: Optional[str] = None) -> dict:
         "source_chain": ["official_canyon_width"],
         "receipt": receipt,
     }
-    if selection_id:
-        result["selection_id"] = selection_id
-        receipt["selection_id"] = selection_id
+    if object_selection_id is not None:
+        result["selection_id"] = object_selection_id
+    if receipt_selection_id is not None:
+        receipt["selection_id"] = receipt_selection_id
     return result
 
 
@@ -128,7 +132,7 @@ class CanyonAuthorityBoundaryTests(unittest.TestCase):
             "source_chain": ["official_canyon_width_unavailable"],
             "receipt": {"kind": "official_canyon_width_unavailable"},
         }
-        forged = _official_canyon(OTHER_SELECTION_ID)
+        forged = _official_canyon(OTHER_SELECTION_ID, OTHER_SELECTION_ID)
         forged["source_chain"] = ["client_forged", "official_canyon_width"]
         stack, canyon_fetch = self._authority_stack(server_unavailable)
 
@@ -165,42 +169,50 @@ class CanyonAuthorityBoundaryTests(unittest.TestCase):
         self.assertIsNone(payload["ews"])
         self.assertIsNone(payload["correlation_id"])
 
-    def test_mismatched_server_canyon_receipt_forces_hold(self) -> None:
-        mismatched_canyon = _official_canyon(SELECTION_ID)
-        mismatched_canyon["receipt"]["selection_id"] = OTHER_SELECTION_ID
-        stack, canyon_fetch = self._authority_stack(mismatched_canyon)
+    def test_server_canyon_ids_must_be_complete_and_matching(self) -> None:
+        cases = (
+            ("missing_object_id", None, SELECTION_ID, "canyon_selection_id_missing"),
+            ("missing_receipt_id", SELECTION_ID, None, "canyon_selection_id_missing"),
+            ("both_ids_missing", None, None, "canyon_selection_id_missing"),
+            ("mismatched_receipt_id", SELECTION_ID, OTHER_SELECTION_ID, "canyon_selection_mismatch"),
+            ("matching_ids", SELECTION_ID, SELECTION_ID, None),
+        )
 
-        with stack:
-            response = self.client.post(
-                "/api/evaluate",
-                json={"latitude": 37.5662952, "longitude": 126.9779451, "selection_id": SELECTION_ID},
-            )
+        for case_name, object_id, receipt_id, unavailable_reason in cases:
+            with self.subTest(case=case_name):
+                canyon = _official_canyon(object_id, receipt_id)
+                stack, canyon_fetch = self._authority_stack(canyon)
 
-        payload = response.json()
-        canyon_fetch.assert_awaited_once()
-        self.assertEqual(payload["final_judgment"], "HOLD")
-        self.assertEqual(payload["canyon_evidence"]["reason"], "canyon_selection_mismatch")
-        self.assertIsNone(payload["urban_factors"]["Fcanyon"])
-        self.assertIsNone(payload["ews"])
-        self.assertIsNone(payload["correlation_id"])
+                with stack:
+                    response = self.client.post(
+                        "/api/evaluate",
+                        json={
+                            "latitude": 37.5662952,
+                            "longitude": 126.9779451,
+                            "selection_id": SELECTION_ID,
+                        },
+                    )
 
-    def test_complete_server_receipts_are_bound_to_one_selection(self) -> None:
-        stack, _ = self._authority_stack(_official_canyon())
-
-        with stack:
-            response = self.client.post(
-                "/api/evaluate",
-                json={"latitude": 37.5662952, "longitude": 126.9779451, "selection_id": SELECTION_ID},
-            )
-
-        payload = response.json()
-        self.assertNotEqual(payload["final_judgment"], "HOLD")
-        self.assertEqual(payload["canyon_evidence"]["selection_id"], SELECTION_ID)
-        self.assertEqual(payload["canyon_evidence"]["receipt"]["selection_id"], SELECTION_ID)
-        self.assertEqual(payload["weather_evidence"]["selection_id"], SELECTION_ID)
-        self.assertEqual(payload["weather_evidence"]["receipt"]["selection_id"], SELECTION_ID)
-        self.assertEqual(payload["building_selection"]["selection_id"], SELECTION_ID)
-        self.assertIsInstance(payload["correlation_id"], str)
+                payload = response.json()
+                canyon_fetch.assert_awaited_once_with(37.5662952, 126.9779451)
+                if unavailable_reason is not None:
+                    self.assertEqual(payload["final_judgment"], "HOLD")
+                    self.assertFalse(payload["official_available"])
+                    self.assertFalse(payload["canyon_evidence"]["official_available"])
+                    self.assertEqual(payload["canyon_evidence"]["reason"], unavailable_reason)
+                    self.assertIsNone(payload["canyon_evidence"]["selection_id"])
+                    self.assertNotIn("selection_id", payload["canyon_evidence"]["receipt"])
+                    self.assertIsNone(payload["urban_factors"]["Fcanyon"])
+                    self.assertIsNone(payload["ews"])
+                    self.assertIsNone(payload["correlation_id"])
+                else:
+                    self.assertNotEqual(payload["final_judgment"], "HOLD")
+                    self.assertEqual(payload["canyon_evidence"]["selection_id"], SELECTION_ID)
+                    self.assertEqual(payload["canyon_evidence"]["receipt"]["selection_id"], SELECTION_ID)
+                    self.assertEqual(payload["weather_evidence"]["selection_id"], SELECTION_ID)
+                    self.assertEqual(payload["weather_evidence"]["receipt"]["selection_id"], SELECTION_ID)
+                    self.assertEqual(payload["building_selection"]["selection_id"], SELECTION_ID)
+                    self.assertIsInstance(payload["correlation_id"], str)
 
 
 if __name__ == "__main__":

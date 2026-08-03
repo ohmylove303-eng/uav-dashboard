@@ -1558,9 +1558,13 @@ def _bind_canyon_evidence_to_selection(
     canyon = dict(payload or {})
     receipt = dict(canyon.get("receipt") or {}) if isinstance(canyon.get("receipt"), dict) else {}
     target = dict(canyon.get("target_building") or {}) if isinstance(canyon.get("target_building"), dict) else {}
-    explicit_selection_ids = [
-        value for value in (canyon.get("selection_id"), receipt.get("selection_id")) if value
-    ]
+    object_selection_id = canyon.get("selection_id")
+    receipt_selection_id = receipt.get("selection_id")
+    selection_ids_complete = bool(object_selection_id and receipt_selection_id)
+    selection_ids_match = bool(
+        object_selection_id == selection_id
+        and receipt_selection_id == selection_id
+    )
     selected_native_id = building_selection.get("native_feature_id") if isinstance(building_selection, dict) else None
     observed_native_ids = [
         value
@@ -1581,21 +1585,24 @@ def _bind_canyon_evidence_to_selection(
         )
         if value
     ]
-    mismatch = bool(
-        any(value != selection_id for value in explicit_selection_ids)
-        or (selected_native_id and any(value != selected_native_id for value in observed_native_ids))
-        or (selected_bd_mgt_sn and any(value != selected_bd_mgt_sn for value in observed_bd_mgt_sns))
+    geometry_identifiers_match = bool(
+        (not selected_native_id or all(value == selected_native_id for value in observed_native_ids))
+        and (not selected_bd_mgt_sn or all(value == selected_bd_mgt_sn for value in observed_bd_mgt_sns))
     )
-    if mismatch:
+    if not selection_ids_complete:
+        canyon = _unavailable_canyon_evidence(
+            road_evidence,
+            "canyon_selection_id_missing",
+            target_building=target or None,
+        )
+    elif not (selection_ids_match and geometry_identifiers_match):
         canyon = _unavailable_canyon_evidence(
             road_evidence,
             "canyon_selection_mismatch",
             target_building=target or None,
         )
-        receipt = dict(canyon["receipt"])
-    canyon["selection_id"] = selection_id
-    receipt["selection_id"] = selection_id
-    canyon["receipt"] = receipt
+    else:
+        canyon["receipt"] = receipt
     return canyon
 
 

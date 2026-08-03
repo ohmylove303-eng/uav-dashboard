@@ -249,10 +249,10 @@ class BuildingSelectionContractTests(unittest.TestCase):
         }
         canyon = {
             "available": True, "official_available": True, "facade_gap_m": 27.0,
-            "source": "official_canyon_width",
+            "selection_id": SELECTION_ID, "source": "official_canyon_width",
             "source_chain": ["official_canyon_width"],
             "receipt": {
-                "kind": "official_canyon_width",
+                "kind": "official_canyon_width", "selection_id": SELECTION_ID,
                 "target_geometry_receipt": True,
                 "opposing_geometry_receipt": True,
                 "road_geometry_receipt": True,
