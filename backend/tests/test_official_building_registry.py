@@ -57,11 +57,27 @@ class OfficialBuildingRegistryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(normalized_key, "abc+def/ghi=")
 
+    def test_invalid_data_go_service_key_shape_is_rejected_without_echo(self):
+        invalid_key = "invalid%ZZ key"
+
+        normalized_key = official_building_registry._normalize_service_key(invalid_key)
+
+        self.assertIsNone(normalized_key)
+
     def test_building_hub_upstream_status_is_classified_without_response_body(self):
-        self.assertEqual(
-            official_building_registry._building_hub_upstream_status_reason(403),
-            "molit_building_hub_upstream_http_403",
-        )
+        for status in (401, 403, 502):
+            with self.subTest(status=status):
+                self.assertEqual(
+                    official_building_registry._building_hub_upstream_status_reason(status),
+                    f"molit_building_hub_upstream_http_{status}",
+                )
+
+    def test_malformed_registry_payload_is_a_typed_failure(self):
+        with self.assertRaisesRegex(
+            official_building_registry.OfficialBuildingRegistryError,
+            "molit_building_hub_invalid_response",
+        ):
+            official_building_registry._as_records("not-a-registry-object")
 
     async def test_verified_click_is_enriched_from_single_official_registry_record(self):
         footprint = {
@@ -167,6 +183,33 @@ class OfficialBuildingRegistryTests(unittest.IsolatedAsyncioTestCase):
 
         fetch.assert_not_called()
         self.assertEqual(result["registry_reason"], "official_geometry_not_verified")
+
+    async def test_mismatched_geometry_identifier_never_queries_registry(self):
+        footprint = {
+            "available": True,
+            "official_footprint_available": True,
+            "official_geometry_receipt": True,
+            "official_selection_match": True,
+            "native_feature_id": "lt_c_spbd.selected",
+            "official_footprint_receipt": {
+                "kind": "vworld_building_footprint",
+                "native_feature_id": "lt_c_spbd.different",
+                "point_inside": True,
+            },
+            "verified_properties": {
+                "bd_mgt_sn": "1114010300100310000019224",
+            },
+            "properties": {
+                "bd_mgt_sn": "1114010300100310000019224",
+            },
+        }
+
+        with patch.object(official_building_registry, "_fetch_title_records", AsyncMock()) as fetch:
+            result = await official_building_registry.enrich_verified_footprint(footprint)
+
+        fetch.assert_not_called()
+        self.assertEqual(result["registry_status"], "unavailable")
+        self.assertEqual(result["registry_reason"], "official_geometry_identifier_mismatch")
 
 
 if __name__ == "__main__":

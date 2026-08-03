@@ -9,7 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from typing import Annotated, Optional, List, Dict, Any
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -288,6 +288,26 @@ class EvaluationRequest(BaseModel):
     correlation_id: Optional[str] = Field(None, description="백엔드 전용 판정 스냅샷 ID")
 
 
+class BuildingSelection(BaseModel):
+    """Immutable server-normalized receipt for one browser selection UUID."""
+
+    model_config = ConfigDict(frozen=True)
+
+    selection_id: str
+    status: str
+    reason: Optional[str] = None
+    mgrs: Optional[str] = None
+    address: Optional[str] = None
+    bd_mgt_sn: Optional[str] = None
+    native_feature_id: Optional[str] = None
+    official_footprint_receipt: Optional[Dict[str, Any]] = None
+    official_registry_receipt: Optional[Dict[str, Any]] = None
+    fields: Dict[str, Any] = Field(default_factory=dict)
+    field_sources: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    source_chain: List[str] = Field(default_factory=list)
+    confidence: float = 0.0
+
+
 class FootprintCacheRequest(BaseModel):
     lat: float
     lon: float
@@ -345,6 +365,7 @@ class EvaluationResponse(BaseModel):
     official_available: bool = False
     selection_id: Optional[str] = None
     correlation_id: Optional[str] = None
+    building_selection: Optional[Dict[str, Any]] = None
 
 
 class RoutePoint(BaseModel):
@@ -453,6 +474,87 @@ def _attach_api_contract(
     contracted["selection_id"] = selection_id
     contracted["source_chain"] = _normalize_source_chain(contracted.get("source_chain"), contracted.get("source"))
     return contracted
+
+
+def _build_building_selection(selection_id: str, footprint: Dict[str, Any]) -> BuildingSelection:
+    properties = footprint.get("properties") if isinstance(footprint.get("properties"), dict) else {}
+    verified_properties = footprint.get("verified_properties")
+    identifiers = verified_properties if isinstance(verified_properties, dict) else properties
+    field_sources = footprint.get("field_sources") if isinstance(footprint.get("field_sources"), dict) else {}
+    official_field_sources = {
+        key: dict(source)
+        for key, source in field_sources.items()
+        if isinstance(source, dict) and source.get("status") == "official_verified"
+    }
+    field_property_keys = {
+        "building_name": "buld_nm",
+        "height_m": "buld_hg",
+        "floor_count": "gro_flo_co",
+        "far_percent": "far_percent",
+        "bcr_percent": "bcr_percent",
+    }
+    registry_receipt = footprint.get("registry_receipt")
+    registry_verified = bool(
+        footprint.get("registry_status") == "official_verified"
+        and isinstance(registry_receipt, dict)
+    )
+    official_fields = {
+        key: properties.get(property_key)
+        for key, property_key in field_property_keys.items()
+        if registry_verified
+        and key in official_field_sources
+        and properties.get(property_key) is not None
+    }
+    footprint_receipt = footprint.get("official_footprint_receipt")
+    if not isinstance(footprint_receipt, dict) and (
+        footprint.get("official_geometry_receipt") and footprint.get("official_selection_match")
+    ):
+        footprint_receipt = {
+            "kind": "verified_building_footprint",
+            "native_feature_id": footprint.get("native_feature_id"),
+            "source_origin": footprint.get("source_origin"),
+            "point_inside": True,
+            "geometry": footprint.get("geometry") or [],
+        }
+    official_geometry = bool(
+        footprint.get("available")
+        and footprint.get("official_footprint_available")
+        and footprint.get("official_geometry_receipt")
+        and footprint.get("official_selection_match")
+        and isinstance(footprint_receipt, dict)
+    )
+    address = next(
+        (
+            str(identifiers[key]).strip()
+            for key in ("road_nm_addr", "road_address", "addr", "address", "jibun_addr")
+            if identifiers.get(key) is not None and str(identifiers[key]).strip()
+        ),
+        None,
+    )
+    mgrs = next(
+        (
+            str(identifiers[key]).strip()
+            for key in ("mgrs", "MGRS")
+            if identifiers.get(key) is not None and str(identifiers[key]).strip()
+        ),
+        None,
+    )
+    status = "official_verified" if official_geometry and registry_verified else "unavailable"
+    return BuildingSelection(
+        selection_id=selection_id,
+        status=status,
+        reason=None if status == "official_verified" else footprint.get("registry_reason") or footprint.get("reason") or "official_building_unavailable",
+        mgrs=mgrs,
+        address=address,
+        bd_mgt_sn=str(identifiers.get("bd_mgt_sn") or "").strip() or None,
+        native_feature_id=str(footprint.get("native_feature_id") or "").strip() or None,
+        official_footprint_receipt=dict(footprint_receipt) if official_geometry else None,
+        official_registry_receipt=dict(registry_receipt) if registry_verified else None,
+        fields=official_fields,
+        field_sources=official_field_sources,
+        source_chain=_normalize_source_chain(footprint.get("source_chain")),
+        confidence=float(footprint.get("confidence") or footprint.get("building_confidence") or 0.0) if official_geometry else 0.0,
+    )
 
 
 def _parse_source_chain(source: Optional[str]) -> List[str]:
@@ -2222,6 +2324,52 @@ async def evaluate_flight(request: EvaluationRequest):
                 "selection_id": request.selection_id,
             },
         )
+    building_selection = None
+    if request.selection_id is not None:
+        server_footprint = await _lookup_building_selection(
+            request.latitude,
+            request.longitude,
+            request.selection_id,
+        )
+        building_selection = server_footprint.get("building_selection")
+        official_height = _build_official_building_height_evidence(server_footprint)
+        selection_verified = bool(
+            isinstance(building_selection, dict)
+            and building_selection.get("status") == "official_verified"
+            and official_height
+        )
+        if selection_verified:
+            receipt = dict(official_height.get("receipt") or {})
+            receipt["registry_receipt"] = building_selection.get("official_registry_receipt")
+            official_height["receipt"] = receipt
+            request = request.model_copy(
+                update={
+                    "building_height": official_height["estimated_height_m"],
+                    "building_source": official_height.get("source"),
+                    "building_profile_source": official_height.get("profile_source"),
+                    "building_source_chain": official_height.get("source_chain"),
+                    "building_confidence": official_height.get("building_confidence"),
+                    "building_evidence": official_height,
+                }
+            )
+        else:
+            request = request.model_copy(
+                update={
+                    "building_height": 0.0,
+                    "building_source": server_footprint.get("source") or "official_building_unavailable",
+                    "building_profile_source": "official_unavailable",
+                    "building_source_chain": server_footprint.get("source_chain") or ["official_building_unavailable"],
+                    "building_confidence": 0.0,
+                    "building_evidence": {
+                        "available": False,
+                        "official_available": False,
+                        "status": "unavailable",
+                        "source": server_footprint.get("source") or "official_building_unavailable",
+                        "source_chain": server_footprint.get("source_chain") or ["official_building_unavailable"],
+                        "reason": server_footprint.get("registry_reason") or server_footprint.get("reason") or "official_building_unavailable",
+                    },
+                }
+            )
     # 1. Weather
     if request.wind_speed is not None:
         # 수동 입력 시
@@ -2432,6 +2580,7 @@ async def evaluate_flight(request: EvaluationRequest):
             official_available=False,
             selection_id=request.selection_id,
             correlation_id=None,
+            building_selection=building_selection,
         )
 
     building_canyon_weight = _resolve_building_canyon_weight(
@@ -2536,6 +2685,7 @@ async def evaluate_flight(request: EvaluationRequest):
         official_available=True,
         selection_id=request.selection_id,
         correlation_id=secrets.token_urlsafe(18),
+        building_selection=building_selection,
     )
 
 
@@ -2751,16 +2901,53 @@ def _build_official_building_height_evidence(footprint: Optional[Dict[str, Any]]
 try:
     from building_height import predict_building_height
 
-    async def _lookup_building_selection(lat: float, lon: float) -> Dict[str, Any]:
+    async def _lookup_building_selection(
+        lat: float,
+        lon: float,
+        selection_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         footprint = await lookup_building_footprint(lat, lon)
-        return await enrich_verified_footprint(footprint)
+        enriched = await enrich_verified_footprint(footprint)
+        if selection_id is None:
+            return enriched
+        result = dict(enriched)
+        result["selection_id"] = selection_id
+        result["building_selection"] = _build_building_selection(
+            selection_id,
+            result,
+        ).model_dump()
+        return result
 
     @app.get("/api/building-height")
     async def get_building_height(lat: float, lon: float, selection_id: Optional[SelectionId] = None):
-        footprint = await _lookup_building_selection(lat, lon)
+        footprint = await _lookup_building_selection(lat, lon, selection_id)
         official_height = _build_official_building_height_evidence(footprint)
-        if official_height:
-            return _attach_api_contract(official_height, selection_id)
+        selection = footprint.get("building_selection")
+        if official_height and (
+            selection_id is None
+            or (isinstance(selection, dict) and selection.get("status") == "official_verified")
+        ):
+            payload = dict(official_height)
+            if selection is not None:
+                payload["building_selection"] = selection
+            return _attach_api_contract(payload, selection_id)
+        if selection_id is not None:
+            return _attach_api_contract(
+                {
+                    "available": False,
+                    "estimated_height_m": None,
+                    "estimated_floors": None,
+                    "far_percent": None,
+                    "bcr_percent": None,
+                    "reason": footprint.get("registry_reason") or footprint.get("reason") or "official_building_height_unavailable",
+                    "source": "official_building_height_unavailable",
+                    "source_chain": footprint.get("source_chain") or [],
+                    "building_selection": selection,
+                },
+                selection_id,
+                official_available=False,
+                status="unavailable",
+            )
         return _attach_api_contract(predict_building_height(lat, lon), selection_id)
 except ImportError:
     pass
@@ -2771,7 +2958,7 @@ try:
 
     @app.get("/api/building-footprint")
     async def get_building_footprint(lat: float, lon: float, selection_id: Optional[SelectionId] = None):
-        footprint = await _lookup_building_selection(lat, lon)
+        footprint = await _lookup_building_selection(lat, lon, selection_id)
         return _attach_api_contract(footprint, selection_id)
 
     @app.post("/api/building-footprint/cache")

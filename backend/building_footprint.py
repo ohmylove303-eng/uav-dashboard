@@ -1271,10 +1271,21 @@ async def lookup_building_footprint(lat: float, lon: float) -> Dict[str, Any]:
             "source": "vworld_wfs",
             "typeName": type_name,
             "geometry": geometry,
+            "native_feature_id": str(matched.get("id") or "") or None,
+            "verified_properties": live_properties,
             "properties": result_properties,
             "field_sources": cached_field_sources,
             "official_geometry_receipt": True,
             "official_selection_match": True,
+            "official_footprint_receipt": {
+                "kind": "vworld_building_footprint",
+                "native_feature_id": str(matched.get("id") or "") or None,
+                "bd_mgt_sn": str(live_properties.get("bd_mgt_sn") or "") or None,
+                "type_name": type_name,
+                "source_origin": source_origin,
+                "point_inside": True,
+                "geometry": geometry,
+            },
         }, source_chain=source_chain, profile_source="wfs", source_origin=source_origin)
         display_name = _extract_display_name(result_properties)
         if display_name:

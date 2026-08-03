@@ -50,10 +50,16 @@ def service_key_configured() -> bool:
     return bool(_resolve_service_key())
 
 
-def _normalize_service_key(value: str) -> str:
+def _normalize_service_key(value: str) -> Optional[str]:
     """Accept either Data.go's Encoding or Decoding service-key form."""
 
-    return unquote(value)
+    candidate = value.strip()
+    if not candidate or any(char.isspace() for char in candidate):
+        return None
+    if re.search(r"%(?![0-9A-Fa-f]{2})", candidate):
+        return None
+    normalized = unquote(candidate)
+    return normalized if normalized and not any(char.isspace() for char in normalized) else None
 
 
 def _resolve_service_key() -> Optional[str]:
@@ -66,7 +72,9 @@ def _resolve_service_key() -> Optional[str]:
     for env_key in (*BUILDING_HUB_ENV_KEYS, *semantic_aliases):
         value = (os.getenv(env_key) or "").strip()
         if value:
-            return _normalize_service_key(value)
+            normalized = _normalize_service_key(value)
+            if normalized:
+                return normalized
     return None
 
 
@@ -160,9 +168,12 @@ async def _fetch_title_records(query: Dict[str, str], service_key: str) -> List[
 
 
 def _selection_names(footprint: Dict[str, Any]) -> List[str]:
-    properties = footprint.get("properties") if isinstance(footprint.get("properties"), dict) else {}
+    verified = footprint.get("verified_properties")
+    properties = verified if isinstance(verified, dict) else (
+        footprint.get("properties") if isinstance(footprint.get("properties"), dict) else {}
+    )
     raw_names = (
-        footprint.get("display_name"),
+        None if isinstance(verified, dict) else footprint.get("display_name"),
         properties.get("buld_nm"),
         properties.get("buld_nm_dc"),
     )
@@ -227,7 +238,30 @@ async def enrich_verified_footprint(footprint: Optional[Dict[str, Any]]) -> Dict
         return _with_registry_unavailable(result, "official_geometry_not_verified")
 
     properties = dict(result.get("properties") or {})
-    query = building_hub_query_from_management_number(properties.get("bd_mgt_sn"))
+    verified_properties = result.get("verified_properties")
+    registry_identifiers = (
+        verified_properties if isinstance(verified_properties, dict) else properties
+    )
+    footprint_receipt = result.get("official_footprint_receipt")
+    if isinstance(footprint_receipt, dict):
+        receipt_feature_id = str(footprint_receipt.get("native_feature_id") or "").strip()
+        selected_feature_id = str(result.get("native_feature_id") or "").strip()
+        receipt_management_id = str(footprint_receipt.get("bd_mgt_sn") or "").strip()
+        selected_management_id = str(registry_identifiers.get("bd_mgt_sn") or "").strip()
+        if (
+            receipt_feature_id
+            and selected_feature_id
+            and receipt_feature_id != selected_feature_id
+        ) or (
+            receipt_management_id
+            and selected_management_id
+            and receipt_management_id != selected_management_id
+        ):
+            return _with_registry_unavailable(
+                result,
+                "official_geometry_identifier_mismatch",
+            )
+    query = building_hub_query_from_management_number(registry_identifiers.get("bd_mgt_sn"))
     if not query:
         return _with_registry_unavailable(result, "building_management_number_unavailable")
 
@@ -287,7 +321,7 @@ async def enrich_verified_footprint(footprint: Optional[Dict[str, Any]]) -> Dict
     result["properties"] = properties
     result["field_sources"] = field_sources
     result["source_chain"] = chain
-    result["display_name"] = result.get("display_name") or building_name or building_name_detail
+    result["display_name"] = building_name or building_name_detail or result.get("display_name")
     result["official_building_data"] = True
     result["registry_status"] = "official_verified"
     result["registry_reason"] = None
@@ -295,6 +329,8 @@ async def enrich_verified_footprint(footprint: Optional[Dict[str, Any]]) -> Dict
         "kind": "molit_building_hub_title",
         "query": query,
         "record_id": str(record.get("mgmBldrgstPk") or "").strip() or None,
+        "bd_mgt_sn": str(registry_identifiers.get("bd_mgt_sn") or "").strip() or None,
+        "native_feature_id": result.get("native_feature_id"),
         "record_count": len(records),
         "selection": "single_record" if len(records) == 1 else "building_name_match",
     }
