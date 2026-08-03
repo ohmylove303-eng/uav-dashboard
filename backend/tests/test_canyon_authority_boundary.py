@@ -83,7 +83,11 @@ class CanyonAuthorityBoundaryTests(unittest.TestCase):
 
         payload = response.json()
         self.assertEqual(response.status_code, 200)
-        canyon_fetch.assert_awaited_once_with(37.5662952, 126.9779451)
+        canyon_fetch.assert_awaited_once_with(
+            37.5662952,
+            126.9779451,
+            selection_id=SELECTION_ID,
+        )
         self.assertEqual(payload["final_judgment"], "HOLD")
         self.assertFalse(payload["official_available"])
         self.assertFalse(payload["canyon_evidence"]["official_available"])
@@ -126,7 +130,11 @@ class CanyonAuthorityBoundaryTests(unittest.TestCase):
         with stack:
             response = asyncio.run(main.evaluate_flight(request))
 
-        canyon_fetch.assert_awaited_once_with(37.5662952, 126.9779451)
+        canyon_fetch.assert_awaited_once_with(
+            37.5662952,
+            126.9779451,
+            selection_id=SELECTION_ID,
+        )
         self.assertEqual(response.selection_id, SELECTION_ID)
         self.assertTrue(response.official_available)
         self.assertIsNotNone(response.urban_factors["Fcanyon"])
@@ -194,7 +202,11 @@ class CanyonAuthorityBoundaryTests(unittest.TestCase):
                     )
 
                 payload = response.json()
-                canyon_fetch.assert_awaited_once_with(37.5662952, 126.9779451)
+                canyon_fetch.assert_awaited_once_with(
+                    37.5662952,
+                    126.9779451,
+                    selection_id=SELECTION_ID,
+                )
                 if unavailable_reason is not None:
                     self.assertEqual(payload["final_judgment"], "HOLD")
                     self.assertFalse(payload["official_available"])

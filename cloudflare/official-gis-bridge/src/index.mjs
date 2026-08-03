@@ -4,6 +4,9 @@ const MAP_WFS_ENDPOINT = "https://map.vworld.kr/js/wfs.do";
 const API_WFS_ENDPOINT = "https://api.vworld.kr/req/wfs";
 const BUILDING_LAYER = "lt_c_spbd";
 const ROAD_LAYER = "lt_l_n3a0020000";
+const RECEIPT_SOURCE = "official_gis_bridge_receipt";
+const RECEIPT_PARTS = ["target_geometry", "opposing_geometry", "road_geometry", "road_crossing", "facade_gap"];
+const SELECTION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function json(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
@@ -23,6 +26,39 @@ function authorizationMatches(value, token) {
 function finiteCoordinate(value, minimum, maximum) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= minimum && parsed <= maximum ? parsed : null;
+}
+
+function validSelectionId(value) {
+  return typeof value === "string" && SELECTION_ID_PATTERN.test(value);
+}
+
+async function deterministicReceiptId(value) {
+  const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes.slice(0, 16)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+async function canyonReceiptBundle(selectionId, target, opposing, road, measurement) {
+  const receiptValues = {
+    target_geometry: target.ring,
+    opposing_geometry: opposing.ring,
+    road_geometry: road.paths[0],
+    road_crossing: {
+      normal_alignment: measurement.normalAlignment,
+      opposing_point: measurement.opposingPoint,
+      target_point: measurement.targetPoint,
+    },
+    facade_gap: measurement.facadeGapM,
+  };
+  const ids = await Promise.all(RECEIPT_PARTS.map((part) => deterministicReceiptId(
+    `uav-canyon:${selectionId}:${RECEIPT_SOURCE}:${part}:${JSON.stringify(receiptValues[part])}`,
+  )));
+  return {
+    receipt_ids: Object.fromEntries(RECEIPT_PARTS.map((part, index) => [part, ids[index]])),
+    receipt_sources: Object.fromEntries(RECEIPT_PARTS.map((part) => [part, RECEIPT_SOURCE])),
+  };
 }
 
 function lonLatToMercator(lon, lat) {
@@ -148,7 +184,7 @@ function selectRoad(payload, lat, lon, requestedRoadName) {
   return candidates[0] ?? null;
 }
 
-function unavailable(reason, road = null, target = null, upstreamAttempts = []) {
+function unavailable(reason, road = null, target = null, upstreamAttempts = [], selectionId = null) {
   const sourceChain = ["vworld_wfs", "official_canyon_width_unavailable"];
   const payload = {
     available: false,
@@ -166,8 +202,10 @@ function unavailable(reason, road = null, target = null, upstreamAttempts = []) 
     source: "official_canyon_width_unavailable",
     source_chain: sourceChain,
     reason,
+    selection_id: selectionId,
     receipt: {
       kind: "official_canyon_width_unavailable",
+      selection_id: selectionId,
       target_geometry_receipt: Boolean(target?.geometry_receipt),
       opposing_geometry_receipt: false,
       road_geometry_receipt: Boolean(road),
@@ -260,8 +298,8 @@ async function fetchOfficialWfsJson(fetchImpl, requests, referer, source) {
   throw failure;
 }
 
-async function canyonEvidence(lat, lon, roadNameValue, env, fetchImpl) {
-  if (!env.VWORLD_DATA_API_KEY || !env.VWORLD_REFERER) return unavailable("missing_vworld_data_api_key");
+async function canyonEvidence(lat, lon, roadNameValue, selectionId, env, fetchImpl) {
+  if (!env.VWORLD_DATA_API_KEY || !env.VWORLD_REFERER) return unavailable("missing_vworld_data_api_key", null, null, [], selectionId);
   let buildingResult;
   let roadResult;
   try {
@@ -269,7 +307,7 @@ async function canyonEvidence(lat, lon, roadNameValue, env, fetchImpl) {
     roadResult = await fetchOfficialWfsJson(fetchImpl, roadRequests(lat, lon, env), env.VWORLD_REFERER, "road");
   } catch (error) {
     const upstreamAttempts = error instanceof Error && Array.isArray(error.upstreamAttempts) ? error.upstreamAttempts : [];
-    return unavailable(error instanceof Error ? error.message : "upstream_request_failed", null, null, upstreamAttempts);
+    return unavailable(error instanceof Error ? error.message : "upstream_request_failed", null, null, upstreamAttempts, selectionId);
   }
   const buildingPayload = buildingResult.payload;
   const roadPayload = roadResult.payload;
@@ -278,12 +316,15 @@ async function canyonEvidence(lat, lon, roadNameValue, env, fetchImpl) {
   const targetMatches = buildings.filter((building) => pointInRing(clickPoint[0], clickPoint[1], building.ring));
   const target = targetMatches.length === 1 ? targetMatches[0] : null;
   const targetReceipt = target ? { id: target.id, name: target.name, geometry_receipt: true, selection_match: true } : null;
-  if (!target) return unavailable("target_official_building_not_selected", null, { id: "target-building", name: null, geometry_receipt: false, selection_match: false });
+  if (!target) return unavailable("target_official_building_not_selected", null, { id: "target-building", name: null, geometry_receipt: false, selection_match: false }, [], selectionId);
   const road = selectRoad(roadPayload, lat, lon, roadNameValue);
-  if (!road) return unavailable("official_road_geometry_not_matched", null, targetReceipt);
+  if (!road) return unavailable("official_road_geometry_not_matched", null, targetReceipt, [], selectionId);
   const measurement = measureFacadeGap({ targetRing: target.ring, roadPath: road.paths[0], buildings: buildings.filter((building) => building.id !== target.id) });
-  if (!measurement.available) return unavailable(measurement.reason, road, targetReceipt);
-  const sourceChain = ["vworld_wfs", buildingResult.sourceOrigin, roadResult.sourceOrigin, "official_building_collection", "official_road_right_of_way", ROAD_LAYER, "official_canyon_width"];
+  if (!measurement.available) return unavailable(measurement.reason, road, targetReceipt, [], selectionId);
+  const sourceChain = ["vworld_wfs", buildingResult.sourceOrigin, roadResult.sourceOrigin, "official_building_collection", "official_road_right_of_way", ROAD_LAYER, "official_canyon_width", RECEIPT_SOURCE];
+  const opposing = buildings.find((building) => building.id === measurement.opposingBuildingId);
+  if (!opposing) return unavailable("opposing_official_building_not_matched", road, targetReceipt, [], selectionId);
+  const receiptBundle = await canyonReceiptBundle(selectionId, target, opposing, road, measurement);
   return {
     available: true,
     official_available: true,
@@ -297,10 +338,20 @@ async function canyonEvidence(lat, lon, roadNameValue, env, fetchImpl) {
     normal_alignment: measurement.normalAlignment,
     target_point: measurement.targetPoint,
     opposing_point: measurement.opposingPoint,
-    source: "official_canyon_width",
+    source: RECEIPT_SOURCE,
     source_chain: sourceChain,
     reason: null,
-    receipt: { kind: "official_canyon_width", target_geometry_receipt: true, opposing_geometry_receipt: true, road_geometry_receipt: true, road_crossing_verified: true, source_chain: sourceChain },
+    selection_id: selectionId,
+    receipt: {
+      kind: "official_canyon_width",
+      selection_id: selectionId,
+      target_geometry_receipt: true,
+      opposing_geometry_receipt: true,
+      road_geometry_receipt: true,
+      road_crossing_verified: true,
+      source_chain: sourceChain,
+      ...receiptBundle,
+    },
   };
 }
 
@@ -311,11 +362,25 @@ export function createWorker({ fetchImpl = fetch } = {}) {
       if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
       if (url.pathname === "/health") return json({ status: "ok", service: "official-gis-bridge" });
       if (url.pathname !== "/api/canyon-width") return json({ error: "not_found" }, 404);
-      if (!authorizationMatches(request.headers.get("authorization"), env.OFFICIAL_GIS_BRIDGE_TOKEN)) return json({ error: "official_gis_bridge_authorization_required" }, 401);
+      const requestedSelectionId = url.searchParams.get("selection_id");
+      if (!authorizationMatches(request.headers.get("authorization"), env.OFFICIAL_GIS_BRIDGE_TOKEN)) {
+        return json(
+          unavailable(
+            "official_gis_bridge_authorization_required",
+            null,
+            null,
+            [],
+            validSelectionId(requestedSelectionId) ? requestedSelectionId : null,
+          ),
+          401,
+        );
+      }
       const lat = finiteCoordinate(url.searchParams.get("lat"), -90, 90);
       const lon = finiteCoordinate(url.searchParams.get("lon"), -180, 180);
       if (lat === null || lon === null) return json({ error: "valid_lat_and_lon_are_required" }, 400);
-      return json(await canyonEvidence(lat, lon, url.searchParams.get("road_name"), env, fetchImpl));
+      const selectionId = requestedSelectionId;
+      if (!validSelectionId(selectionId)) return json(unavailable("invalid_selection_id"), 400);
+      return json(await canyonEvidence(lat, lon, url.searchParams.get("road_name"), selectionId, env, fetchImpl));
     },
   };
 }

@@ -3,6 +3,16 @@ from typing import Optional
 
 SELECTION_ID = "00000000-0000-4000-8000-000000000007"
 OTHER_SELECTION_ID = "00000000-0000-4000-8000-000000000008"
+CANYON_RECEIPT_IDS = {
+    "target_geometry": "d09405f8-c168-5ba7-b928-5102ed0a0d44",
+    "opposing_geometry": "ec3eff5c-dda4-55b5-b659-865865b8c3b6",
+    "road_geometry": "1c342204-fb71-5448-ad27-e7298cf93647",
+    "road_crossing": "8bf5b12e-436a-5889-a72f-4ff6d950f98c",
+    "facade_gap": "4cce213b-98ba-5118-ad95-8e52c084c72b",
+}
+CANYON_RECEIPT_SOURCES = {
+    part: "direct_vworld_official_receipt" for part in CANYON_RECEIPT_IDS
+}
 
 
 def forged_client_building_fields() -> dict:
@@ -95,14 +105,20 @@ def official_canyon(
         "opposing_geometry_receipt": True,
         "road_geometry_receipt": True,
         "road_crossing_verified": True,
-        "source_chain": ["official_canyon_width"],
+        "source_chain": ["official_canyon_width", "direct_vworld_official_receipt"],
+        "receipt_ids": dict(CANYON_RECEIPT_IDS),
+        "receipt_sources": dict(CANYON_RECEIPT_SOURCES),
     }
     result = {
         "available": True,
         "official_available": True,
         "facade_gap_m": 27.0,
-        "source": "official_canyon_width",
-        "source_chain": ["official_canyon_width"],
+        "effective_canyon_width_m": 27.0,
+        "road_crossing_verified": True,
+        "source": "direct_vworld_official_receipt",
+        "source_chain": ["official_canyon_width", "direct_vworld_official_receipt"],
+        "target_building": {"id": "target-7", "geometry_receipt": True},
+        "opposing_building": {"id": "opposing-7", "geometry_receipt": True},
         "receipt": receipt,
     }
     if object_selection_id is not None:

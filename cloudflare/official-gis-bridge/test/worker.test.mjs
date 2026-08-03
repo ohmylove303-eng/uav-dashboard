@@ -3,6 +3,9 @@ import test from "node:test";
 
 import { createWorker } from "../src/index.mjs";
 
+const selectionId = "9d88e3aa-17c7-4b75-b7a0-a6db69498ca4";
+const bridgeUrl = `https://bridge.example/api/canyon-width?lat=0&lon=-0.00006&selection_id=${selectionId}`;
+
 const buildingFeatures = {
   type: "FeatureCollection",
   features: [
@@ -60,7 +63,7 @@ test("prefers the Map WFS building collection in EPSG:3857", async () => {
   });
 
   await worker.fetch(
-    new Request("https://bridge.example/api/canyon-width?lat=0&lon=-0.00006", {
+    new Request(bridgeUrl, {
       headers: { authorization: "Bearer server-only-token" },
     }),
     env,
@@ -91,7 +94,7 @@ test("falls back to API WFS without domain when the Map WFS building request fai
   });
 
   const response = await worker.fetch(
-    new Request("https://bridge.example/api/canyon-width?lat=0&lon=-0.00006", {
+    new Request(bridgeUrl, {
       headers: { authorization: "Bearer server-only-token" },
     }),
     env,
@@ -124,7 +127,7 @@ test("does not send a browser referer to the API WFS fallback", async () => {
   });
 
   await worker.fetch(
-    new Request("https://bridge.example/api/canyon-width?lat=0&lon=-0.00006", {
+    new Request(bridgeUrl, {
       headers: { authorization: "Bearer server-only-token" },
     }),
     env,
@@ -142,14 +145,45 @@ const env = {
 };
 
 test("requires the server-only Render authorization token", async () => {
-  const response = await makeWorker().fetch(new Request("https://bridge.example/api/canyon-width?lat=0&lon=-0.00006"), env);
+  const response = await makeWorker().fetch(new Request(bridgeUrl), env);
+  const payload = await response.json();
 
   assert.equal(response.status, 401);
+  assert.equal(payload.available, false);
+  assert.equal(payload.official_available, false);
+  assert.equal(payload.facade_gap_m, null);
+  assert.equal(payload.effective_canyon_width_m, null);
+  assert.equal(payload.reason, "official_gis_bridge_authorization_required");
+  assert.equal(payload.selection_id, selectionId);
+  assert.equal(payload.receipt.selection_id, selectionId);
+});
+
+test("requires a valid selection UUID before querying official geometry", async () => {
+  let upstreamCalls = 0;
+  const worker = createWorker({
+    fetchImpl: async () => {
+      upstreamCalls += 1;
+      return new Response("unexpected", { status: 500 });
+    },
+  });
+  const response = await worker.fetch(
+    new Request("https://bridge.example/api/canyon-width?lat=0&lon=-0.00006", {
+      headers: { authorization: "Bearer server-only-token" },
+    }),
+    env,
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 400);
+  assert.equal(payload.available, false);
+  assert.equal(payload.reason, "invalid_selection_id");
+  assert.equal(payload.facade_gap_m, null);
+  assert.equal(upstreamCalls, 0);
 });
 
 test("returns a verified facade gap instead of promoting official road right-of-way as a canyon width", async () => {
   const response = await makeWorker().fetch(
-    new Request("https://bridge.example/api/canyon-width?lat=0&lon=-0.00006", {
+    new Request(bridgeUrl, {
       headers: { authorization: "Bearer server-only-token" },
     }),
     env,
@@ -159,10 +193,23 @@ test("returns a verified facade gap instead of promoting official road right-of-
   assert.equal(response.status, 200);
   assert.equal(payload.available, true);
   assert.equal(payload.official_available, true);
-  assert.equal(payload.source, "official_canyon_width");
+  assert.equal(payload.source, "official_gis_bridge_receipt");
+  assert.equal(payload.selection_id, selectionId);
   assert.notEqual(payload.facade_gap_m, 49.7);
   assert.equal(payload.official_road_right_of_way_width_m, 49.7);
   assert.equal(payload.receipt.road_crossing_verified, true);
+  assert.equal(payload.receipt.selection_id, selectionId);
+  assert.deepEqual(new Set(Object.values(payload.receipt.receipt_sources)), new Set(["official_gis_bridge_receipt"]));
+  assert.deepEqual(Object.keys(payload.receipt.receipt_ids).sort(), [
+    "facade_gap",
+    "opposing_geometry",
+    "road_crossing",
+    "road_geometry",
+    "target_geometry",
+  ]);
+  for (const receiptId of Object.values(payload.receipt.receipt_ids)) {
+    assert.match(receiptId, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  }
   assert.equal(payload.target_building.id, "target-building");
   assert.equal(payload.opposing_building.id, "opposing-building");
 });
@@ -175,7 +222,7 @@ test("identifies the official upstream that is unavailable without fabricating c
     },
   });
   const response = await worker.fetch(
-    new Request("https://bridge.example/api/canyon-width?lat=0&lon=-0.00006", {
+    new Request(bridgeUrl, {
       headers: { authorization: "Bearer server-only-token" },
     }),
     env,

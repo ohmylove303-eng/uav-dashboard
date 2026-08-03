@@ -11,7 +11,12 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 import main  # noqa: E402
-from tests.task7_evaluation_fixtures import SELECTION_ID, server_building  # noqa: E402
+from tests.task7_evaluation_fixtures import (  # noqa: E402
+    CANYON_RECEIPT_IDS,
+    CANYON_RECEIPT_SOURCES,
+    SELECTION_ID,
+    server_building,
+)
 
 
 class EvaluationQualityGateTests(unittest.TestCase):
@@ -60,9 +65,13 @@ class EvaluationQualityGateTests(unittest.TestCase):
                 "official_available": True,
                 "selection_id": SELECTION_ID,
                 "facade_gap_m": 27.0,
+                "effective_canyon_width_m": 27.0,
                 "official_road_right_of_way_width_m": 49.7,
-                "source": "official_canyon_width",
-                "source_chain": ["vworld_wfs", "official_canyon_width"],
+                "road_crossing_verified": True,
+                "source": "direct_vworld_official_receipt",
+                "source_chain": ["vworld_wfs", "official_canyon_width", "direct_vworld_official_receipt"],
+                "target_building": {"id": "target-7", "geometry_receipt": True},
+                "opposing_building": {"id": "opposing-7", "geometry_receipt": True},
                 "receipt": {
                     "kind": "official_canyon_width",
                     "selection_id": SELECTION_ID,
@@ -70,7 +79,9 @@ class EvaluationQualityGateTests(unittest.TestCase):
                     "opposing_geometry_receipt": True,
                     "road_geometry_receipt": True,
                     "road_crossing_verified": True,
-                    "source_chain": ["vworld_wfs", "official_canyon_width"],
+                    "source_chain": ["vworld_wfs", "official_canyon_width", "direct_vworld_official_receipt"],
+                    "receipt_ids": dict(CANYON_RECEIPT_IDS),
+                    "receipt_sources": dict(CANYON_RECEIPT_SOURCES),
                 },
             },
         }

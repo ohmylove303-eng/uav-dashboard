@@ -11,6 +11,10 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 import main  # noqa: E402
+from tests.task7_evaluation_fixtures import (  # noqa: E402
+    CANYON_RECEIPT_IDS,
+    CANYON_RECEIPT_SOURCES,
+)
 
 
 SELECTION_ID = "00000000-0000-4000-8000-000000000007"
@@ -249,15 +253,21 @@ class BuildingSelectionContractTests(unittest.TestCase):
         }
         canyon = {
             "available": True, "official_available": True, "facade_gap_m": 27.0,
-            "selection_id": SELECTION_ID, "source": "official_canyon_width",
-            "source_chain": ["official_canyon_width"],
+            "effective_canyon_width_m": 27.0,
+            "selection_id": SELECTION_ID, "source": "direct_vworld_official_receipt",
+            "road_crossing_verified": True,
+            "source_chain": ["official_canyon_width", "direct_vworld_official_receipt"],
+            "target_building": {"id": "target-7", "geometry_receipt": True},
+            "opposing_building": {"id": "opposing-7", "geometry_receipt": True},
             "receipt": {
                 "kind": "official_canyon_width", "selection_id": SELECTION_ID,
                 "target_geometry_receipt": True,
                 "opposing_geometry_receipt": True,
                 "road_geometry_receipt": True,
                 "road_crossing_verified": True,
-                "source_chain": ["official_canyon_width"],
+                "source_chain": ["official_canyon_width", "direct_vworld_official_receipt"],
+                "receipt_ids": dict(CANYON_RECEIPT_IDS),
+                "receipt_sources": dict(CANYON_RECEIPT_SOURCES),
             },
         }
         with (
