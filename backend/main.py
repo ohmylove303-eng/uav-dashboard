@@ -284,7 +284,7 @@ class EvaluationRequest(BaseModel):
     road_evidence: Optional[Dict[str, Any]] = Field(None, description="도로 폭 근거 객체")
     canyon_evidence: Optional[Dict[str, Any]] = Field(None, description="건물 간 이격폭 근거 객체")
     weather_evidence: Optional[Dict[str, Any]] = Field(None, description="기상 근거 객체")
-    selection_id: Optional[SelectionId] = Field(None, description="브라우저 선택 상관 ID")
+    selection_id: SelectionId = Field(..., description="브라우저 선택 상관 ID")
     correlation_id: Optional[str] = Field(None, description="백엔드 전용 판정 스냅샷 ID")
 
 

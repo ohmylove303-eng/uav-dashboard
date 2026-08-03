@@ -11,6 +11,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 import main  # noqa: E402
+from tests.task7_evaluation_fixtures import SELECTION_ID, server_building  # noqa: E402
 
 
 class EvaluationQualityGateTests(unittest.TestCase):
@@ -19,6 +20,7 @@ class EvaluationQualityGateTests(unittest.TestCase):
         self.base_payload = {
             "latitude": 37.5665,
             "longitude": 126.9780,
+            "selection_id": SELECTION_ID,
             "building_height": 40.0,
             "street_width": 27.0,
             "wind_alignment": "직각",
@@ -56,12 +58,14 @@ class EvaluationQualityGateTests(unittest.TestCase):
             "canyon_evidence": {
                 "available": True,
                 "official_available": True,
+                "selection_id": SELECTION_ID,
                 "facade_gap_m": 27.0,
                 "official_road_right_of_way_width_m": 49.7,
                 "source": "official_canyon_width",
                 "source_chain": ["vworld_wfs", "official_canyon_width"],
                 "receipt": {
                     "kind": "official_canyon_width",
+                    "selection_id": SELECTION_ID,
                     "target_geometry_receipt": True,
                     "opposing_geometry_receipt": True,
                     "road_geometry_receipt": True,
@@ -94,6 +98,7 @@ class EvaluationQualityGateTests(unittest.TestCase):
 
     def test_all_official_inputs_allow_a_normal_verdict(self):
         with (
+            patch.object(main, "_lookup_building_selection", AsyncMock(return_value=server_building())),
             patch.object(main, "fetch_weather_safe", AsyncMock(return_value=dict(self.authoritative_weather))),
             patch.object(main, "fetch_kp_index_safe", AsyncMock(return_value=3.0)),
             patch.object(main, "fetch_kma_upper_air_profile_safe", AsyncMock(return_value=None)),
@@ -110,12 +115,15 @@ class EvaluationQualityGateTests(unittest.TestCase):
         self.assertIsInstance(payload["urban_factors"]["Fcanyon"], float)
         self.assertEqual(payload["urban_factors"]["W"], 27.0)
         self.assertEqual(payload["urban_factors"]["official_road_right_of_way_width_m"], 49.7)
+        self.assertEqual(payload["selection_id"], SELECTION_ID)
+        self.assertIsInstance(payload["correlation_id"], str)
 
     def test_official_road_right_of_way_without_a_verified_facade_gap_forces_hold(self):
         payload = dict(self.base_payload)
         payload.pop("canyon_evidence")
 
         with (
+            patch.object(main, "_lookup_building_selection", AsyncMock(return_value=server_building())),
             patch.object(main, "fetch_weather_safe", AsyncMock(return_value=dict(self.authoritative_weather))),
             patch.object(main, "fetch_kp_index_safe", AsyncMock(return_value=3.0)),
             patch.object(main, "fetch_kma_upper_air_profile_safe", AsyncMock(return_value=None)),
@@ -146,26 +154,13 @@ class EvaluationQualityGateTests(unittest.TestCase):
 
     def test_official_floor_count_derived_height_forces_hold_even_with_verified_facade_gap(self):
         payload = dict(self.base_payload)
-        payload["building_source"] = "official_floor_count_derived"
-        payload["building_profile_source"] = "official_floor_count_derived"
-        payload["building_source_chain"] = ["vworld_wfs", "official_floor_count_derived"]
-        payload["building_evidence"] = {
-            "available": True,
-            "official_available": True,
-            "status": "official_verified",
-            "height_m": 19.8,
-            "source": "official_floor_count_derived",
-            "source_chain": ["vworld_wfs", "official_floor_count_derived"],
-            "derivation": "official_floor_count_height",
-            "receipt": {
-                "kind": "official_building_height",
-                "geometry_receipt": True,
-                "selection_match": True,
-                "source_chain": ["vworld_wfs", "official_floor_count_derived"],
-            },
-        }
 
         with (
+            patch.object(
+                main,
+                "_lookup_building_selection",
+                AsyncMock(return_value=server_building(official_height=False)),
+            ),
             patch.object(main, "fetch_weather_safe", AsyncMock(return_value=dict(self.authoritative_weather))),
             patch.object(main, "fetch_kp_index_safe", AsyncMock(return_value=3.0)),
             patch.object(main, "fetch_kma_upper_air_profile_safe", AsyncMock(return_value=None)),
@@ -204,23 +199,14 @@ class EvaluationQualityGateTests(unittest.TestCase):
                 },
                 dict(self.authoritative_weather),
                 ["canyon_width"],
+                server_building(),
             ),
             (
                 "building estimated",
-                {
-                    "building_source": "osm_fallback",
-                    "building_profile_source": "coordinate_based",
-                    "building_source_chain": ["osm_fallback", "coordinate_based"],
-                    "building_confidence": 0.42,
-                    "building_evidence": {
-                        "available": True,
-                        "official_available": False,
-                        "status": "estimated",
-                        "source_chain": ["osm_fallback", "coordinate_based"],
-                    },
-                },
+                {},
                 dict(self.authoritative_weather),
                 ["building"],
+                server_building(official_height=False),
             ),
             (
                 "weather non authoritative",
@@ -233,16 +219,22 @@ class EvaluationQualityGateTests(unittest.TestCase):
                     "source_chain": ["open_meteo_surface"],
                 },
                 ["weather"],
+                server_building(),
             ),
         ]
 
-        for case_name, payload_override, weather_payload, expected_missing in cases:
+        for case_name, payload_override, weather_payload, expected_missing, server_building_result in cases:
             with self.subTest(case_name=case_name):
                 payload = dict(self.base_payload)
                 payload.update(payload_override)
                 server_road = payload_override.get("road_evidence", self.base_payload["road_evidence"])
                 server_canyon = payload_override.get("canyon_evidence", self.base_payload["canyon_evidence"])
                 with (
+                    patch.object(
+                        main,
+                        "_lookup_building_selection",
+                        AsyncMock(return_value=server_building_result),
+                    ),
                     patch.object(main, "fetch_weather_safe", AsyncMock(return_value=weather_payload)),
                     patch.object(main, "fetch_kp_index_safe", AsyncMock(return_value=3.0)),
                     patch.object(main, "fetch_kma_upper_air_profile_safe", AsyncMock(return_value=None)),

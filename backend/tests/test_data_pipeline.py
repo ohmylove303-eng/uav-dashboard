@@ -51,7 +51,7 @@ class DataPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("kma_radiosonde", weather["source"])
         self.assertIn("kma_wind_profiler", weather["source"])
 
-    async def test_evaluate_flight_applies_building_provenance(self):
+    async def test_evaluate_flight_rejects_client_building_provenance_without_server_receipt(self):
         weather_payload = {
             "wind_speed": 5.0,
             "gust_speed": 7.5,
@@ -74,6 +74,7 @@ class DataPipelineTests(unittest.IsolatedAsyncioTestCase):
         request = main.EvaluationRequest(
             latitude=37.5665,
             longitude=126.9780,
+            selection_id="00000000-0000-4000-8000-000000000007",
             building_height=40,
             street_width=10,
             wind_alignment="직각",
@@ -91,18 +92,53 @@ class DataPipelineTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
+            patch.object(
+                main,
+                "_lookup_building_selection",
+                AsyncMock(
+                    return_value={
+                        "available": False,
+                        "official_footprint_available": False,
+                        "source": "official_building_unavailable",
+                        "source_chain": ["vworld_wfs", "official_building_unavailable"],
+                        "reason": "no_containing_official_building",
+                    }
+                ),
+            ),
             patch.object(main, "fetch_weather_safe", AsyncMock(return_value=weather_payload)),
             patch.object(main, "fetch_kp_index_safe", AsyncMock(return_value=3.0)),
             patch.object(main, "fetch_kma_upper_air_profile_safe", AsyncMock(return_value=None)),
             patch.object(main, "fetch_kma_wind_profiler_profile_safe", AsyncMock(return_value=None)),
+            patch.object(
+                main,
+                "fetch_road_width_evidence",
+                AsyncMock(return_value={"available": False, "official_available": False}),
+            ),
+            patch.object(
+                main,
+                "fetch_canyon_width_evidence",
+                AsyncMock(
+                    return_value={
+                        "available": False,
+                        "official_available": False,
+                        "facade_gap_m": None,
+                        "source": "official_canyon_width_unavailable",
+                        "reason": "authoritative_canyon_unavailable",
+                        "source_chain": ["official_canyon_width_unavailable"],
+                    }
+                ),
+            ),
         ):
             response = await main.evaluate_flight(request)
 
         self.assertEqual(response.profile_source, "surface_only")
-        self.assertEqual(response.building_source, "osm_fallback")
-        self.assertEqual(response.building_profile_source, "coordinate_based")
-        self.assertCountEqual(response.building_source_chain, ["osm_fallback", "coordinate_based"])
-        self.assertAlmostEqual(response.building_confidence, 0.42, places=2)
+        self.assertEqual(response.building_source, "official_building_unavailable")
+        self.assertEqual(response.building_profile_source, "official_unavailable")
+        self.assertCountEqual(
+            response.building_source_chain,
+            ["vworld_wfs", "official_building_unavailable", "official_unavailable"],
+        )
+        self.assertAlmostEqual(response.building_confidence, 0.0, places=2)
         self.assertEqual(response.final_judgment, main.JudgmentLevel.HOLD)
         self.assertEqual(response.input_quality["status"], "hold")
         self.assertCountEqual(
@@ -113,8 +149,10 @@ class DataPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(response.urban_factors["Fcanyon_raw"])
         self.assertIsNone(response.urban_factors["building_canyon_weight"])
         self.assertIn("open_meteo_surface", response.source_chain)
-        self.assertIn("osm_fallback", response.source_chain)
+        self.assertNotIn("osm_fallback", response.source_chain)
         self.assertCountEqual(response.weather["source_chain"], ["open_meteo_surface"])
+        self.assertEqual(response.selection_id, "00000000-0000-4000-8000-000000000007")
+        self.assertIsNone(response.correlation_id)
 
     async def test_corridor_analysis_returns_segment_provenance(self):
         weather_payload = {

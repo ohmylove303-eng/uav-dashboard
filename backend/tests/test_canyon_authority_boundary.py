@@ -1,11 +1,12 @@
+import asyncio
 from contextlib import ExitStack
 from pathlib import Path
 import sys
 import unittest
-from typing import Optional
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -13,91 +14,14 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 import main  # noqa: E402
-
-
-SELECTION_ID = "00000000-0000-4000-8000-000000000007"
-OTHER_SELECTION_ID = "00000000-0000-4000-8000-000000000008"
-
-
-def _server_building() -> dict:
-    return {
-        "available": True,
-        "official_footprint_available": True,
-        "official_geometry_receipt": True,
-        "official_selection_match": True,
-        "source": "vworld_wfs",
-        "source_chain": ["vworld_wfs", "molit_building_hub"],
-        "native_feature_id": "lt_c_spbd.7",
-        "properties": {"buld_hg": 40.0, "gro_flo_co": 10},
-        "field_sources": {
-            "height_m": {"source": "molit_building_hub", "status": "official_verified"},
-        },
-        "building_selection": {
-            "selection_id": SELECTION_ID,
-            "status": "official_verified",
-            "native_feature_id": "lt_c_spbd.7",
-            "official_footprint_receipt": {
-                "kind": "vworld_building_footprint",
-                "native_feature_id": "lt_c_spbd.7",
-                "point_inside": True,
-            },
-            "official_registry_receipt": {
-                "kind": "molit_building_hub_title",
-                "record_id": "record-7",
-            },
-        },
-    }
-
-
-def _weather() -> dict:
-    return {
-        "available": True,
-        "authoritative": True,
-        "authority_source": "kma_surface_observation",
-        "source": "kma_surface_observation",
-        "source_chain": ["kma_surface_observation"],
-        "profile_source": "surface_only",
-        "stale_cache": False,
-        "wind_speed": 5.0,
-        "gust_speed": 7.5,
-        "wind_direction": 90,
-        "visibility": 12.0,
-        "precipitation_prob": 0,
-        "weather_code": 0,
-        "temperature": 20,
-        "dew_point": 14,
-        "humidity": 50,
-        "cloud_cover": 20,
-        "sunrise": "06:00",
-        "sunset": "18:00",
-    }
-
-
-def _official_canyon(
-    object_selection_id: Optional[str],
-    receipt_selection_id: Optional[str],
-) -> dict:
-    receipt = {
-        "kind": "official_canyon_width",
-        "target_geometry_receipt": True,
-        "opposing_geometry_receipt": True,
-        "road_geometry_receipt": True,
-        "road_crossing_verified": True,
-        "source_chain": ["official_canyon_width"],
-    }
-    result = {
-        "available": True,
-        "official_available": True,
-        "facade_gap_m": 27.0,
-        "source": "official_canyon_width",
-        "source_chain": ["official_canyon_width"],
-        "receipt": receipt,
-    }
-    if object_selection_id is not None:
-        result["selection_id"] = object_selection_id
-    if receipt_selection_id is not None:
-        receipt["selection_id"] = receipt_selection_id
-    return result
+from tests.task7_evaluation_fixtures import (  # noqa: E402
+    OTHER_SELECTION_ID,
+    SELECTION_ID,
+    authoritative_weather,
+    forged_client_building_fields,
+    official_canyon,
+    server_building,
+)
 
 
 class CanyonAuthorityBoundaryTests(unittest.TestCase):
@@ -106,8 +30,8 @@ class CanyonAuthorityBoundaryTests(unittest.TestCase):
 
     def _authority_stack(self, canyon_result: dict) -> tuple[ExitStack, AsyncMock]:
         stack = ExitStack()
-        stack.enter_context(patch.object(main, "_lookup_building_selection", AsyncMock(return_value=_server_building())))
-        stack.enter_context(patch.object(main, "fetch_weather_safe", AsyncMock(return_value=_weather())))
+        stack.enter_context(patch.object(main, "_lookup_building_selection", AsyncMock(return_value=server_building())))
+        stack.enter_context(patch.object(main, "fetch_weather_safe", AsyncMock(return_value=authoritative_weather())))
         stack.enter_context(patch.object(main, "fetch_kp_index_safe", AsyncMock(return_value=3.0)))
         stack.enter_context(patch.object(main, "fetch_kma_upper_air_profile_safe", AsyncMock(return_value=None)))
         stack.enter_context(patch.object(main, "fetch_kma_wind_profiler_profile_safe", AsyncMock(return_value=None)))
@@ -132,7 +56,7 @@ class CanyonAuthorityBoundaryTests(unittest.TestCase):
             "source_chain": ["official_canyon_width_unavailable"],
             "receipt": {"kind": "official_canyon_width_unavailable"},
         }
-        forged = _official_canyon(OTHER_SELECTION_ID, OTHER_SELECTION_ID)
+        forged = official_canyon(OTHER_SELECTION_ID, OTHER_SELECTION_ID)
         forged["source_chain"] = ["client_forged", "official_canyon_width"]
         stack, canyon_fetch = self._authority_stack(server_unavailable)
 
@@ -169,6 +93,82 @@ class CanyonAuthorityBoundaryTests(unittest.TestCase):
         self.assertIsNone(payload["ews"])
         self.assertIsNone(payload["correlation_id"])
 
+    def test_evaluation_request_requires_valid_selection_id_directly(self) -> None:
+        invalid_cases = (
+            ("absent", {}),
+            ("null", {"selection_id": None}),
+            ("empty", {"selection_id": ""}),
+            ("invalid", {"selection_id": "not-a-uuid"}),
+        )
+
+        for case_name, selection_field in invalid_cases:
+            with self.subTest(case=case_name):
+                with self.assertRaises(ValidationError):
+                    main.EvaluationRequest.model_validate(
+                        {
+                            "latitude": 37.5662952,
+                            "longitude": 126.9779451,
+                            **selection_field,
+                        }
+                    )
+
+        request = main.EvaluationRequest.model_validate(
+            {
+                "latitude": 37.5662952,
+                "longitude": 126.9779451,
+                "selection_id": SELECTION_ID,
+            }
+        )
+        self.assertEqual(request.selection_id, SELECTION_ID)
+        stack, canyon_fetch = self._authority_stack(
+            official_canyon(SELECTION_ID, SELECTION_ID)
+        )
+        with stack:
+            response = asyncio.run(main.evaluate_flight(request))
+
+        canyon_fetch.assert_awaited_once_with(37.5662952, 126.9779451)
+        self.assertEqual(response.selection_id, SELECTION_ID)
+        self.assertTrue(response.official_available)
+        self.assertIsNotNone(response.urban_factors["Fcanyon"])
+        self.assertIsNotNone(response.ews)
+        self.assertIsInstance(response.correlation_id, str)
+
+    def test_http_evaluate_rejects_missing_or_invalid_selection_id_before_fetch(self) -> None:
+        invalid_cases = (
+            ("absent", {}),
+            ("null", {"selection_id": None}),
+            ("empty", {"selection_id": ""}),
+            ("invalid", {"selection_id": "not-a-uuid"}),
+        )
+
+        for case_name, selection_field in invalid_cases:
+            with self.subTest(case=case_name):
+                stack, canyon_fetch = self._authority_stack(official_canyon(None, None))
+                with stack:
+                    response = self.client.post(
+                        "/api/evaluate",
+                        json={
+                            "latitude": 37.5662952,
+                            "longitude": 126.9779451,
+                            **forged_client_building_fields(),
+                            "canyon_evidence": official_canyon(None, None),
+                            "weather_evidence": {
+                                "available": True,
+                                "authoritative": True,
+                                "authority_source": "client_forged_weather",
+                            },
+                            **selection_field,
+                        },
+                    )
+
+                payload = response.json()
+                self.assertEqual(response.status_code, 422)
+                self.assertEqual(payload["status"], "unavailable")
+                self.assertEqual(payload["reason"], "invalid_selection_id")
+                self.assertFalse(payload["official_available"])
+                self.assertNotIn("correlation_id", payload)
+                canyon_fetch.assert_not_awaited()
+
     def test_server_canyon_ids_must_be_complete_and_matching(self) -> None:
         cases = (
             ("missing_object_id", None, SELECTION_ID, "canyon_selection_id_missing"),
@@ -180,7 +180,7 @@ class CanyonAuthorityBoundaryTests(unittest.TestCase):
 
         for case_name, object_id, receipt_id, unavailable_reason in cases:
             with self.subTest(case=case_name):
-                canyon = _official_canyon(object_id, receipt_id)
+                canyon = official_canyon(object_id, receipt_id)
                 stack, canyon_fetch = self._authority_stack(canyon)
 
                 with stack:
