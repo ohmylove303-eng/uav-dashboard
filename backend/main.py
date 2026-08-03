@@ -770,6 +770,8 @@ def _build_building_evidence(request: EvaluationRequest) -> Dict[str, Any]:
         "confidence": _clamp(request.building_confidence if request.building_confidence is not None else provided.get("confidence", 0.72)),
         "height_receipt_complete": height_receipt_complete,
         "height_is_floor_derived": height_is_floor_derived,
+        "selection_id": receipt.get("selection_id"),
+        "receipt": receipt,
     }
 
 
@@ -801,6 +803,7 @@ def _build_input_quality(
     road_evidence: Dict[str, Any],
     canyon_evidence: Dict[str, Any],
     weather_evidence: Dict[str, Any],
+    selection_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     missing_prerequisites: List[str] = []
     reasons: List[str] = []
@@ -814,6 +817,21 @@ def _build_input_quality(
     if not (weather_evidence.get("available") and weather_evidence.get("authoritative")):
         missing_prerequisites.append("weather")
         reasons.append(f'weather:{weather_evidence.get("reason") or weather_evidence.get("status")}')
+
+    if selection_id:
+        for prerequisite, evidence in (
+            ("building", building_evidence),
+            ("canyon_width", canyon_evidence),
+            ("weather", weather_evidence),
+        ):
+            receipt = evidence.get("receipt") if isinstance(evidence.get("receipt"), dict) else {}
+            if (
+                evidence.get("selection_id") != selection_id
+                or receipt.get("selection_id") != selection_id
+            ):
+                if prerequisite not in missing_prerequisites:
+                    missing_prerequisites.append(prerequisite)
+                reasons.append(f"{prerequisite}:selection_snapshot_mismatch")
 
     status = "hold" if missing_prerequisites else "ready"
     return {
@@ -1527,7 +1545,58 @@ def _normalize_canyon_evidence(payload: Optional[Dict[str, Any]]) -> Dict[str, A
         "source_chain": source_chain,
         "reason": canyon.get("reason"),
         "receipt": receipt,
+        "selection_id": canyon.get("selection_id"),
     }
+
+
+def _bind_canyon_evidence_to_selection(
+    payload: Optional[Dict[str, Any]],
+    selection_id: str,
+    road_evidence: Dict[str, Any],
+    building_selection: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    canyon = dict(payload or {})
+    receipt = dict(canyon.get("receipt") or {}) if isinstance(canyon.get("receipt"), dict) else {}
+    target = dict(canyon.get("target_building") or {}) if isinstance(canyon.get("target_building"), dict) else {}
+    explicit_selection_ids = [
+        value for value in (canyon.get("selection_id"), receipt.get("selection_id")) if value
+    ]
+    selected_native_id = building_selection.get("native_feature_id") if isinstance(building_selection, dict) else None
+    observed_native_ids = [
+        value
+        for value in (
+            target.get("native_feature_id"),
+            receipt.get("native_feature_id"),
+            receipt.get("target_native_feature_id"),
+        )
+        if value
+    ]
+    selected_bd_mgt_sn = building_selection.get("bd_mgt_sn") if isinstance(building_selection, dict) else None
+    observed_bd_mgt_sns = [
+        value
+        for value in (
+            target.get("bd_mgt_sn"),
+            receipt.get("bd_mgt_sn"),
+            receipt.get("target_bd_mgt_sn"),
+        )
+        if value
+    ]
+    mismatch = bool(
+        any(value != selection_id for value in explicit_selection_ids)
+        or (selected_native_id and any(value != selected_native_id for value in observed_native_ids))
+        or (selected_bd_mgt_sn and any(value != selected_bd_mgt_sn for value in observed_bd_mgt_sns))
+    )
+    if mismatch:
+        canyon = _unavailable_canyon_evidence(
+            road_evidence,
+            "canyon_selection_mismatch",
+            target_building=target or None,
+        )
+        receipt = dict(canyon["receipt"])
+    canyon["selection_id"] = selection_id
+    receipt["selection_id"] = selection_id
+    canyon["receipt"] = receipt
+    return canyon
 
 
 def _building_source_quality(
@@ -2332,15 +2401,25 @@ async def evaluate_flight(request: EvaluationRequest):
             request.selection_id,
         )
         building_selection = server_footprint.get("building_selection")
+        if isinstance(building_selection, dict):
+            building_selection = dict(building_selection)
+            for receipt_name in ("official_footprint_receipt", "official_registry_receipt"):
+                selection_receipt = building_selection.get(receipt_name)
+                if isinstance(selection_receipt, dict):
+                    selection_receipt = dict(selection_receipt)
+                    selection_receipt["selection_id"] = request.selection_id
+                    building_selection[receipt_name] = selection_receipt
         official_height = _build_official_building_height_evidence(server_footprint)
         selection_verified = bool(
             isinstance(building_selection, dict)
+            and building_selection.get("selection_id") == request.selection_id
             and building_selection.get("status") == "official_verified"
             and official_height
         )
         if selection_verified:
             receipt = dict(official_height.get("receipt") or {})
             receipt["registry_receipt"] = building_selection.get("official_registry_receipt")
+            receipt["selection_id"] = request.selection_id
             official_height["receipt"] = receipt
             request = request.model_copy(
                 update={
@@ -2462,10 +2541,6 @@ async def evaluate_flight(request: EvaluationRequest):
     if source_suffixes:
         weather["source"] = f'{weather.get("source", "open_meteo_surface")} + {", ".join(source_suffixes)}'
     weather = _attach_weather_provenance(weather, upper_air, wind_profiler)
-    if request.weather_evidence:
-        weather["available"] = request.weather_evidence.get("available", weather.get("available"))
-        weather["authoritative"] = request.weather_evidence.get("authoritative", weather.get("authoritative"))
-        weather["authority_source"] = request.weather_evidence.get("authority_source", weather.get("authority_source"))
     profile_source = weather.get("profile_source", "surface_only")
 
     # 2. Drone Specs
@@ -2480,12 +2555,36 @@ async def evaluate_flight(request: EvaluationRequest):
     building_source = request.building_source or building_source_chain[0]
     building_profile_source = request.building_profile_source or "manual_input"
     building_confidence = float(building_evidence["confidence"])
-    raw_road_evidence = request.road_evidence if request.road_evidence is not None else await fetch_road_width_evidence(request.latitude, request.longitude)
+    raw_road_evidence = await fetch_road_width_evidence(request.latitude, request.longitude)
     road_evidence = _normalize_road_evidence(raw_road_evidence)
-    raw_canyon_evidence = request.canyon_evidence if request.canyon_evidence is not None else await fetch_canyon_width_evidence(request.latitude, request.longitude)
+    raw_canyon_evidence = await fetch_canyon_width_evidence(request.latitude, request.longitude)
+    if request.selection_id is not None:
+        raw_canyon_evidence = _bind_canyon_evidence_to_selection(
+            raw_canyon_evidence,
+            request.selection_id,
+            road_evidence,
+            building_selection,
+        )
     canyon_evidence = _normalize_canyon_evidence(raw_canyon_evidence)
     weather_evidence = _build_weather_evidence(weather, upper_air, wind_profiler)
-    input_quality = _build_input_quality(building_evidence, road_evidence, canyon_evidence, weather_evidence)
+    if request.selection_id is not None:
+        weather_evidence["selection_id"] = request.selection_id
+        if weather_evidence.get("available") and weather_evidence.get("authoritative"):
+            weather_evidence["receipt"] = {
+                "kind": "authoritative_weather_observation",
+                "selection_id": request.selection_id,
+                "authority_source": weather_evidence.get("authority_source"),
+                "source_chain": weather_evidence.get("source_chain") or [],
+            }
+        else:
+            weather_evidence["receipt"] = None
+    input_quality = _build_input_quality(
+        building_evidence,
+        road_evidence,
+        canyon_evidence,
+        weather_evidence,
+        selection_id=request.selection_id,
+    )
     effective_street_width = float(canyon_evidence["facade_gap_m"] or 0.0)
     hw_ratio = request.building_height / effective_street_width if effective_street_width > 0 else None
 

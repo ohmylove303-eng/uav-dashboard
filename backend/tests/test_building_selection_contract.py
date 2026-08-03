@@ -124,6 +124,7 @@ class BuildingSelectionContractTests(unittest.TestCase):
             patch.object(main, "fetch_kma_upper_air_profile_safe", AsyncMock(return_value=None)),
             patch.object(main, "fetch_kma_wind_profiler_profile_safe", AsyncMock(return_value=None)),
             patch.object(main, "fetch_road_width_evidence", AsyncMock(return_value=unavailable)),
+            patch.object(main, "fetch_canyon_width_evidence", AsyncMock(return_value=unavailable)),
         ):
             # When: evaluation receives the forged browser provenance.
             response = self.client.post("/api/evaluate", json=browser_claim)

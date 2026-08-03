@@ -98,6 +98,8 @@ class EvaluationQualityGateTests(unittest.TestCase):
             patch.object(main, "fetch_kp_index_safe", AsyncMock(return_value=3.0)),
             patch.object(main, "fetch_kma_upper_air_profile_safe", AsyncMock(return_value=None)),
             patch.object(main, "fetch_kma_wind_profiler_profile_safe", AsyncMock(return_value=None)),
+            patch.object(main, "fetch_road_width_evidence", AsyncMock(return_value=self.base_payload["road_evidence"])),
+            patch.object(main, "fetch_canyon_width_evidence", AsyncMock(return_value=self.base_payload["canyon_evidence"])),
         ):
             response = self.client.post("/api/evaluate", json=self.base_payload)
 
@@ -118,6 +120,7 @@ class EvaluationQualityGateTests(unittest.TestCase):
             patch.object(main, "fetch_kp_index_safe", AsyncMock(return_value=3.0)),
             patch.object(main, "fetch_kma_upper_air_profile_safe", AsyncMock(return_value=None)),
             patch.object(main, "fetch_kma_wind_profiler_profile_safe", AsyncMock(return_value=None)),
+            patch.object(main, "fetch_road_width_evidence", AsyncMock(return_value=self.base_payload["road_evidence"])),
             patch.object(
                 main,
                 "fetch_canyon_width_evidence",
@@ -167,6 +170,8 @@ class EvaluationQualityGateTests(unittest.TestCase):
             patch.object(main, "fetch_kp_index_safe", AsyncMock(return_value=3.0)),
             patch.object(main, "fetch_kma_upper_air_profile_safe", AsyncMock(return_value=None)),
             patch.object(main, "fetch_kma_wind_profiler_profile_safe", AsyncMock(return_value=None)),
+            patch.object(main, "fetch_road_width_evidence", AsyncMock(return_value=self.base_payload["road_evidence"])),
+            patch.object(main, "fetch_canyon_width_evidence", AsyncMock(return_value=self.base_payload["canyon_evidence"])),
         ):
             response = self.client.post("/api/evaluate", json=payload)
 
@@ -235,11 +240,15 @@ class EvaluationQualityGateTests(unittest.TestCase):
             with self.subTest(case_name=case_name):
                 payload = dict(self.base_payload)
                 payload.update(payload_override)
+                server_road = payload_override.get("road_evidence", self.base_payload["road_evidence"])
+                server_canyon = payload_override.get("canyon_evidence", self.base_payload["canyon_evidence"])
                 with (
                     patch.object(main, "fetch_weather_safe", AsyncMock(return_value=weather_payload)),
                     patch.object(main, "fetch_kp_index_safe", AsyncMock(return_value=3.0)),
                     patch.object(main, "fetch_kma_upper_air_profile_safe", AsyncMock(return_value=None)),
                     patch.object(main, "fetch_kma_wind_profiler_profile_safe", AsyncMock(return_value=None)),
+                    patch.object(main, "fetch_road_width_evidence", AsyncMock(return_value=server_road)),
+                    patch.object(main, "fetch_canyon_width_evidence", AsyncMock(return_value=server_canyon)),
                 ):
                     response = self.client.post("/api/evaluate", json=payload)
 
