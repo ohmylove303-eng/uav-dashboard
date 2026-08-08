@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 import unittest
@@ -11,7 +12,12 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 import main  # noqa: E402
-from tests.task7_evaluation_fixtures import authoritative_weather  # noqa: E402
+from tests.task7_evaluation_fixtures import (  # noqa: E402
+    SELECTION_ID,
+    authoritative_weather,
+    official_canyon,
+    server_building,
+)
 
 
 class FakeResponse:
@@ -38,6 +44,37 @@ class FakeAsyncClient:
 
     async def get(self, url, params=None):
         return self._handler(url, params or {})
+
+
+def open_meteo_display_payload() -> dict:
+    return {
+        "current": {
+            "temperature_2m": 18.0,
+            "relative_humidity_2m": 40,
+            "dew_point_2m": 10.0,
+            "weather_code": 0,
+            "cloud_cover": 20,
+            "wind_speed_10m": 15.12,
+            "wind_direction_10m": 120,
+            "wind_gusts_10m": 21.96,
+            "visibility": 9500,
+            "precipitation_probability": 5,
+        },
+        "daily": {
+            "sunrise": ["2026-08-08T05:40"],
+            "sunset": ["2026-08-08T19:33"],
+        },
+    }
+
+
+def kma_surface_text(observed_at_kst: datetime) -> str:
+    return "\n".join(
+        [
+            "# header",
+            "# TM STN WD WS GST_WD GST_WS GST_TM PA PS TA TD HM RN CA_TOT VS WW",
+            f"{observed_at_kst.strftime('%Y%m%d%H%M')} 108 9 5.0 10 7.8 1230 1008.4 1014.2 26.4 21.0 72 0.0 8 1500 맑음",
+        ]
+    )
 
 
 class WeatherResilienceTests(unittest.IsolatedAsyncioTestCase):
@@ -78,31 +115,12 @@ class WeatherResilienceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_fetch_weather_safe_returns_authoritative_kma_surface_receipt_bound_to_request(self):
         selection_id = "00000000-0000-4000-8000-000000000007"
-        open_meteo_payload = {
-            "current": {
-                "temperature_2m": 28.0,
-                "relative_humidity_2m": 61,
-                "dew_point_2m": 19.2,
-                "weather_code": 0,
-                "cloud_cover": 30,
-                "wind_speed_10m": 18.0,
-                "wind_direction_10m": 120,
-                "wind_gusts_10m": 25.2,
-                "visibility": 10000,
-                "precipitation_probability": 10,
-            },
-            "daily": {
-                "sunrise": ["2026-08-08T05:42"],
-                "sunset": ["2026-08-08T19:31"],
-            },
+        open_meteo_payload = open_meteo_display_payload()
+        open_meteo_payload["daily"] = {
+            "sunrise": ["2026-08-08T05:42"],
+            "sunset": ["2026-08-08T19:31"],
         }
-        kma_text = "\n".join(
-            [
-                "# header",
-                "# TM STN WD WS GST_WD GST_WS GST_TM PA PS TA TD HM RN CA_TOT VS WW",
-                "202608081300 108 9 5.0 10 7.8 1230 1008.4 1014.2 26.4 21.0 72 0.0 8 1500 맑음",
-            ]
-        )
+        kma_text = kma_surface_text(datetime.now(main.KST) - timedelta(minutes=5))
 
         def handler(url: str, params: dict):
             if "kma_sfctm2.php" in url:
@@ -134,24 +152,7 @@ class WeatherResilienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["receipt"]["values"]["visibility"], 15.0)
 
     async def test_fetch_weather_safe_returns_open_meteo_display_when_kma_surface_is_unavailable(self):
-        open_meteo_payload = {
-            "current": {
-                "temperature_2m": 18.0,
-                "relative_humidity_2m": 40,
-                "dew_point_2m": 10.0,
-                "weather_code": 0,
-                "cloud_cover": 20,
-                "wind_speed_10m": 15.12,
-                "wind_direction_10m": 120,
-                "wind_gusts_10m": 21.96,
-                "visibility": 9500,
-                "precipitation_probability": 5,
-            },
-            "daily": {
-                "sunrise": ["2026-08-08T05:40"],
-                "sunset": ["2026-08-08T19:33"],
-            },
-        }
+        open_meteo_payload = open_meteo_display_payload()
 
         def handler(url: str, params: dict):
             if "kma_sfctm2.php" in url:
@@ -166,11 +167,13 @@ class WeatherResilienceTests(unittest.IsolatedAsyncioTestCase):
         ):
             payload = await main.fetch_weather_safe(37.5665, 126.9780)
 
-        self.assertTrue(payload["available"])
+        self.assertFalse(payload["available"])
         self.assertFalse(payload["authoritative"])
         self.assertEqual(payload["reason"], "surface_weather_http_error")
-        self.assertEqual(payload["source"], "open_meteo_surface")
-        self.assertEqual(payload["source_chain"], ["open_meteo_surface"])
+        self.assertEqual(payload["source"], "weather_unavailable")
+        self.assertEqual(payload["source_chain"], ["weather_unavailable", "surface_weather_http_error"])
+        self.assertEqual(payload["temperature"], 18.0)
+        self.assertEqual(payload["sunrise"], "05:40")
         self.assertIsNone(payload["authority_source"])
 
     async def test_fetch_weather_safe_returns_typed_reason_for_surface_http_failure(self):
@@ -208,6 +211,75 @@ class WeatherResilienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(payload["available"])
         self.assertFalse(payload["authoritative"])
         self.assertEqual(payload["reason"], "surface_weather_parse_error")
+
+    async def test_fetch_weather_safe_returns_typed_reason_for_malformed_surface_timestamp(self):
+        malformed_kma_text = "\n".join(
+            [
+                "# header",
+                "# TM STN WD WS GST_WD GST_WS GST_TM PA PS TA TD HM RN CA_TOT VS WW",
+                "not-a-timestamp 108 9 5.0 10 7.8 1230 1008.4 1014.2 26.4 21.0 72 0.0 8 1500 맑음",
+            ]
+        )
+
+        def handler(url: str, params: dict):
+            if "kma_sfctm2.php" in url:
+                return FakeResponse(status_code=200, text=malformed_kma_text)
+            if "open-meteo.com" in url:
+                return FakeResponse(status_code=200, json_data=open_meteo_display_payload())
+            raise AssertionError(f"unexpected url: {url}")
+
+        with (
+            patch.object(main, "KMA_API_KEY", "test-kma-key"),
+            patch.object(main.httpx, "AsyncClient", side_effect=lambda *args, **kwargs: FakeAsyncClient(handler)),
+        ):
+            payload = await main.fetch_weather_safe(37.5665, 126.9780)
+
+        self.assertFalse(payload["available"])
+        self.assertFalse(payload["authoritative"])
+        self.assertEqual(payload["reason"], "surface_weather_parse_error")
+
+    async def test_fetch_weather_safe_returns_typed_reason_for_stale_surface_timestamp(self):
+        stale_kma_text = kma_surface_text(
+            datetime.now(main.KST) - main.SURFACE_WEATHER_RECEIPT_TTL - timedelta(minutes=5)
+        )
+
+        def handler(url: str, params: dict):
+            if "kma_sfctm2.php" in url:
+                return FakeResponse(status_code=200, text=stale_kma_text)
+            if "open-meteo.com" in url:
+                return FakeResponse(status_code=200, json_data=open_meteo_display_payload())
+            raise AssertionError(f"unexpected url: {url}")
+
+        with (
+            patch.object(main, "KMA_API_KEY", "test-kma-key"),
+            patch.object(main.httpx, "AsyncClient", side_effect=lambda *args, **kwargs: FakeAsyncClient(handler)),
+        ):
+            payload = await main.fetch_weather_safe(37.5665, 126.9780)
+
+        self.assertFalse(payload["available"])
+        self.assertFalse(payload["authoritative"])
+        self.assertEqual(payload["reason"], "surface_weather_stale")
+        self.assertEqual(payload["temperature"], 18.0)
+
+    async def test_fetch_weather_safe_returns_typed_reason_for_future_surface_timestamp(self):
+        future_kma_text = kma_surface_text(datetime.now(main.KST) + timedelta(hours=2))
+
+        def handler(url: str, params: dict):
+            if "kma_sfctm2.php" in url:
+                return FakeResponse(status_code=200, text=future_kma_text)
+            if "open-meteo.com" in url:
+                return FakeResponse(status_code=200, json_data=open_meteo_display_payload())
+            raise AssertionError(f"unexpected url: {url}")
+
+        with (
+            patch.object(main, "KMA_API_KEY", "test-kma-key"),
+            patch.object(main.httpx, "AsyncClient", side_effect=lambda *args, **kwargs: FakeAsyncClient(handler)),
+        ):
+            payload = await main.fetch_weather_safe(37.5665, 126.9780)
+
+        self.assertFalse(payload["available"])
+        self.assertFalse(payload["authoritative"])
+        self.assertEqual(payload["reason"], "surface_weather_freshness_invalid")
 
     async def test_fetch_weather_safe_returns_typed_reason_for_surface_timeout_failure(self):
         def handler(url: str, params: dict):
@@ -264,6 +336,114 @@ class WeatherResilienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(payload["weather_evidence"]["authoritative"])
         self.assertEqual(payload["weather_evidence"]["status"], "estimated")
         self.assertEqual(payload["weather_evidence"]["source_chain"], ["open_meteo_surface"])
+
+    def test_evaluate_route_uses_real_kma_adapter_for_normal_and_hold_decisions(self):
+        client = TestClient(main.app)
+        request_payload = {
+            "latitude": 37.5665,
+            "longitude": 126.9780,
+            "selection_id": SELECTION_ID,
+            "building_height": 999.0,
+            "street_width": 1.0,
+            "building_source": "browser_estimate",
+            "building_evidence": {"official_available": True, "source": "browser_estimate"},
+            "wind_alignment": "직각",
+            "mission_altitude": 30,
+            "no_fly_zone": False,
+            "crowd_area": False,
+            "gps_locked": 12,
+            "glonass_locked": 6,
+            "drone_model": main.DroneModel.MAVIC_3.value,
+        }
+        cache_key = main._cache_key_for_latlon(37.5665, 126.9780)
+        fresh_kma_text = kma_surface_text(datetime.now(main.KST) - timedelta(minutes=5))
+
+        def make_handler(kma_text: str):
+            def handler(url: str, params: dict):
+                if "kma_sfctm2.php" in url:
+                    return FakeResponse(status_code=200, text=kma_text)
+                if "open-meteo.com" in url:
+                    return FakeResponse(status_code=200, json_data=open_meteo_display_payload())
+                raise AssertionError(f"unexpected url: {url}")
+            return handler
+
+        with (
+            patch.object(main, "KMA_API_KEY", "test-kma-key"),
+            patch.object(main.httpx, "AsyncClient", side_effect=lambda *args, **kwargs: FakeAsyncClient(make_handler(fresh_kma_text))),
+            patch.object(main, "_lookup_building_selection", AsyncMock(return_value=server_building())),
+            patch.object(main, "fetch_kp_index_safe", AsyncMock(return_value=3.0)),
+            patch.object(main, "fetch_kma_upper_air_profile_safe", AsyncMock(return_value=None)),
+            patch.object(main, "fetch_kma_wind_profiler_profile_safe", AsyncMock(return_value=None)),
+            patch.object(
+                main,
+                "fetch_road_width_evidence",
+                AsyncMock(
+                    return_value={
+                        "available": True,
+                        "official_available": True,
+                        "width_m": 49.7,
+                        "source": "official_road_right_of_way",
+                        "source_chain": ["vworld_wfs", "official_road_right_of_way"],
+                    }
+                ),
+            ),
+            patch.object(main, "fetch_canyon_width_evidence", AsyncMock(return_value=official_canyon(SELECTION_ID, SELECTION_ID))),
+        ):
+            fresh_response = client.post("/api/evaluate", json=request_payload)
+
+        self.assertEqual(fresh_response.status_code, 200)
+        fresh_payload = fresh_response.json()
+        self.assertIn(fresh_payload["final_judgment"], {"GO", "RESTRICT", "NO_GO"})
+        self.assertNotEqual(fresh_payload["final_judgment"], "HOLD")
+        self.assertIsInstance(fresh_payload["urban_factors"]["Fcanyon"], float)
+        self.assertIsInstance(fresh_payload["ews"], float)
+        self.assertTrue(fresh_payload["correlation_id"])
+        self.assertTrue(fresh_payload["weather_evidence"]["authoritative"])
+        self.assertEqual(fresh_payload["weather_evidence"]["receipt"]["source"], "kma_surface_observation")
+
+        stale_observed_at = datetime.now(timezone.utc) - main.SURFACE_WEATHER_RECEIPT_TTL - timedelta(minutes=5)
+        stale_expires_at = stale_observed_at + main.SURFACE_WEATHER_RECEIPT_TTL
+        cached_weather = dict(main.WEATHER_CACHE[cache_key]["value"])
+        cached_weather["observed_at_utc"] = stale_observed_at.isoformat()
+        cached_weather["expires_at_utc"] = stale_expires_at.isoformat()
+        cached_receipt = dict(cached_weather.get("receipt") or {})
+        cached_receipt["observed_at_utc"] = stale_observed_at.isoformat()
+        cached_receipt["expires_at_utc"] = stale_expires_at.isoformat()
+        cached_weather["receipt"] = cached_receipt
+        main.WEATHER_CACHE[cache_key]["value"] = cached_weather
+
+        with (
+            patch.object(main, "KMA_API_KEY", "test-kma-key"),
+            patch.object(main.httpx, "AsyncClient", side_effect=lambda *args, **kwargs: FakeAsyncClient(make_handler(fresh_kma_text))),
+            patch.object(main, "_lookup_building_selection", AsyncMock(return_value=server_building())),
+            patch.object(main, "fetch_kp_index_safe", AsyncMock(return_value=3.0)),
+            patch.object(main, "fetch_kma_upper_air_profile_safe", AsyncMock(return_value=None)),
+            patch.object(main, "fetch_kma_wind_profiler_profile_safe", AsyncMock(return_value=None)),
+            patch.object(
+                main,
+                "fetch_road_width_evidence",
+                AsyncMock(
+                    return_value={
+                        "available": True,
+                        "official_available": True,
+                        "width_m": 49.7,
+                        "source": "official_road_right_of_way",
+                        "source_chain": ["vworld_wfs", "official_road_right_of_way"],
+                    }
+                ),
+            ),
+            patch.object(main, "fetch_canyon_width_evidence", AsyncMock(return_value=official_canyon(SELECTION_ID, SELECTION_ID))),
+        ):
+            stale_response = client.post("/api/evaluate", json=request_payload)
+
+        self.assertEqual(stale_response.status_code, 200)
+        stale_payload = stale_response.json()
+        self.assertEqual(stale_payload["final_judgment"], "HOLD")
+        self.assertIn("weather:surface_weather_stale", stale_payload["input_quality"]["reasons"])
+        self.assertEqual(stale_payload["weather_evidence"]["reason"], "surface_weather_stale")
+        self.assertIsNone(stale_payload["urban_factors"]["Fcanyon"])
+        self.assertIsNone(stale_payload["ews"])
+        self.assertIsNone(stale_payload["correlation_id"])
 
 
 if __name__ == "__main__":

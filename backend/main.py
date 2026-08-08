@@ -265,6 +265,8 @@ SURFACE_WEATHER_REASON_TIMEOUT = "surface_weather_timeout"
 SURFACE_WEATHER_REASON_HTTP = "surface_weather_http_error"
 SURFACE_WEATHER_REASON_PARSE = "surface_weather_parse_error"
 SURFACE_WEATHER_REASON_UNCONFIGURED = "surface_weather_unconfigured"
+SURFACE_WEATHER_REASON_STALE = "surface_weather_stale"
+SURFACE_WEATHER_REASON_FRESHNESS_INVALID = "surface_weather_freshness_invalid"
 SURFACE_WEATHER_RECEIPT_TTL = timedelta(hours=1)
 KST = timezone(timedelta(hours=9))
 
@@ -804,6 +806,46 @@ def _build_surface_weather_receipt(
     return receipt
 
 
+def _surface_weather_freshness_reason(
+    observed_at_utc: datetime,
+    *,
+    expires_at_utc: Optional[datetime] = None,
+    now_utc: Optional[datetime] = None,
+) -> Optional[str]:
+    current_time = now_utc or datetime.now(timezone.utc)
+    if observed_at_utc.tzinfo is None:
+        return SURFACE_WEATHER_REASON_PARSE
+    if observed_at_utc > current_time:
+        return SURFACE_WEATHER_REASON_FRESHNESS_INVALID
+    bounded_expires_at = observed_at_utc + SURFACE_WEATHER_RECEIPT_TTL
+    if expires_at_utc is not None:
+        if expires_at_utc.tzinfo is None or expires_at_utc <= observed_at_utc:
+            return SURFACE_WEATHER_REASON_FRESHNESS_INVALID
+        bounded_expires_at = min(bounded_expires_at, expires_at_utc)
+    if bounded_expires_at <= current_time:
+        return SURFACE_WEATHER_REASON_STALE
+    return None
+
+
+def _surface_weather_authority_reason(payload: Dict[str, Any]) -> Optional[str]:
+    receipt = payload.get("receipt") if isinstance(payload.get("receipt"), dict) else {}
+    observed_at = _parse_surface_weather_datetime(
+        payload.get("observed_at_utc", receipt.get("observed_at_utc"))
+    )
+    if observed_at is None:
+        return SURFACE_WEATHER_REASON_PARSE
+    expires_value = payload.get("expires_at_utc", receipt.get("expires_at_utc"))
+    expires_at = None
+    if expires_value is not None:
+        expires_at = _parse_surface_weather_datetime(expires_value)
+        if expires_at is None:
+            return SURFACE_WEATHER_REASON_PARSE
+    return _surface_weather_freshness_reason(
+        observed_at,
+        expires_at_utc=expires_at,
+    )
+
+
 def _bind_surface_weather_to_request(
     payload: Dict[str, Any],
     *,
@@ -835,6 +877,8 @@ def _fresh_authoritative_weather_cache(
         return None
     source_chain = _normalize_source_chain(cached.get("source_chain") or [], cached.get("source"))
     if not _weather_is_authoritative(source_chain, False):
+        return None
+    if _surface_weather_authority_reason(cached) is not None:
         return None
     payload = _attach_weather_provenance(_make_fresh_weather_cache_payload(cached))
     return _bind_surface_weather_to_request(
@@ -2144,6 +2188,14 @@ async def fetch_kp_index_safe() -> float:
 
 async def fetch_weather_safe(lat: float, lon: float, selection_id: Optional[str] = None) -> Dict:
     cache_key = _cache_key_for_latlon(lat, lon)
+    typed_surface_failure_reasons = {
+        SURFACE_WEATHER_REASON_TIMEOUT,
+        SURFACE_WEATHER_REASON_HTTP,
+        SURFACE_WEATHER_REASON_PARSE,
+        SURFACE_WEATHER_REASON_UNCONFIGURED,
+        SURFACE_WEATHER_REASON_STALE,
+        SURFACE_WEATHER_REASON_FRESHNESS_INVALID,
+    }
     try:
         weather = _attach_weather_provenance(
             await asyncio.wait_for(fetch_weather(lat, lon), timeout=SURFACE_WEATHER_REQUEST_TIMEOUT_S)
@@ -2158,16 +2210,22 @@ async def fetch_weather_safe(lat: float, lon: float, selection_id: Optional[str]
         weather["available"] = bool(weather.get("available", True))
         weather["authoritative"] = _weather_is_authoritative(weather.get("source_chain", []), bool(weather.get("stale_cache")))
         if weather.get("authoritative"):
-            weather["authority_source"] = next(
-                (token for token in weather.get("source_chain", []) if token in AUTHORITATIVE_WEATHER_SOURCE_TOKENS),
-                None,
-            )
-            return _bind_surface_weather_to_request(
-                weather,
-                latitude=lat,
-                longitude=lon,
-                selection_id=selection_id,
-            )
+            authority_reason = _surface_weather_authority_reason(weather)
+            if authority_reason is not None:
+                weather = _attach_weather_provenance(
+                    _make_weather_unavailable(authority_reason, fallback=weather)
+                )
+            else:
+                weather["authority_source"] = next(
+                    (token for token in weather.get("source_chain", []) if token in AUTHORITATIVE_WEATHER_SOURCE_TOKENS),
+                    None,
+                )
+                return _bind_surface_weather_to_request(
+                    weather,
+                    latitude=lat,
+                    longitude=lon,
+                    selection_id=selection_id,
+                )
         weather["authority_source"] = None
         cached = _fresh_authoritative_weather_cache(
             cache_key=cache_key,
@@ -2175,13 +2233,12 @@ async def fetch_weather_safe(lat: float, lon: float, selection_id: Optional[str]
             longitude=lon,
             selection_id=selection_id,
         )
-        if cached and weather.get("reason") in {
-            SURFACE_WEATHER_REASON_TIMEOUT,
-            SURFACE_WEATHER_REASON_HTTP,
-            SURFACE_WEATHER_REASON_PARSE,
-            SURFACE_WEATHER_REASON_UNCONFIGURED,
-        }:
+        if cached and weather.get("reason") in typed_surface_failure_reasons:
             return cached
+        if weather.get("reason") in typed_surface_failure_reasons:
+            return _attach_weather_provenance(
+                _make_weather_unavailable(str(weather["reason"]), fallback=weather)
+            )
         return weather
 
     cached = _fresh_authoritative_weather_cache(
@@ -2434,7 +2491,10 @@ async def fetch_kma_surface_observation(lat: float, lon: float) -> Dict[str, Any
             continue
         observed_at_utc = _parse_surface_weather_datetime(row.get("TM"))
         if observed_at_utc is None:
-            continue
+            raise SurfaceWeatherFetchError(SURFACE_WEATHER_REASON_PARSE)
+        freshness_reason = _surface_weather_freshness_reason(observed_at_utc)
+        if freshness_reason is not None:
+            raise SurfaceWeatherFetchError(freshness_reason)
         precipitation = _surface_precipitating(row)
         wind_speed = _surface_float(row.get("WS")) or 0.0
         gust_speed = _surface_float(row.get("GST_WS"))
