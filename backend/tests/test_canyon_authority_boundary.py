@@ -31,7 +31,13 @@ class CanyonAuthorityBoundaryTests(unittest.TestCase):
     def _authority_stack(self, canyon_result: dict) -> tuple[ExitStack, AsyncMock]:
         stack = ExitStack()
         stack.enter_context(patch.object(main, "_lookup_building_selection", AsyncMock(return_value=server_building())))
-        stack.enter_context(patch.object(main, "fetch_weather_safe", AsyncMock(return_value=authoritative_weather())))
+        stack.enter_context(
+            patch.object(
+                main,
+                "fetch_weather_safe",
+                AsyncMock(return_value=authoritative_weather(selection_id=SELECTION_ID)),
+            )
+        )
         stack.enter_context(patch.object(main, "fetch_kp_index_safe", AsyncMock(return_value=3.0)))
         stack.enter_context(patch.object(main, "fetch_kma_upper_air_profile_safe", AsyncMock(return_value=None)))
         stack.enter_context(patch.object(main, "fetch_kma_wind_profiler_profile_safe", AsyncMock(return_value=None)))

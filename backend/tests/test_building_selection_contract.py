@@ -235,7 +235,7 @@ class BuildingSelectionContractTests(unittest.TestCase):
                 },
             },
         }
-        weather = authoritative_weather()
+        weather = authoritative_weather(selection_id=SELECTION_ID)
         road = {
             "available": True, "official_available": True, "width_m": 49.7,
             "source": "official_road_right_of_way",

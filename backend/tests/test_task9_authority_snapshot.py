@@ -1,111 +1,27 @@
-from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 import unittest
-from typing import Optional
-from unittest.mock import AsyncMock, patch
-
-from fastapi.testclient import TestClient
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-import main  # noqa: E402
 from tests.task7_evaluation_fixtures import (  # noqa: E402
     OTHER_SELECTION_ID,
     SELECTION_ID,
-    authoritative_weather,
     official_canyon,
     server_building,
 )
+from tests.task9_authority_fixtures import (  # noqa: E402
+    AuthoritySnapshotTestCase,
+    verified_kma_weather,
+    verified_kma_weather_with,
+)
 
 
-LATITUDE = 37.5665
-LONGITUDE = 126.9780
-
-
-def verified_kma_weather(*, selection_id: Optional[str] = None) -> dict:
-    return authoritative_weather(
-        latitude=LATITUDE,
-        longitude=LONGITUDE,
-        selection_id=selection_id,
-    )
-
-
-def verified_kma_weather_with(**values) -> dict:
-    weather = verified_kma_weather()
-    weather.update(values)
-    weather["receipt"]["values"].update(values)
-    return weather
-
-
-class Task9AuthoritySnapshotTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.client = TestClient(main.app)
-        self.request_payload = {
-            "latitude": LATITUDE,
-            "longitude": LONGITUDE,
-            "selection_id": SELECTION_ID,
-            "building_height": 999.0,
-            "street_width": 1.0,
-            "building_source": "browser_estimate",
-            "building_evidence": {
-                "official_available": True,
-                "source": "browser_estimate",
-            },
-        }
-
-    def _post(
-        self,
-        weather: dict,
-        *,
-        building: Optional[dict] = None,
-        canyon: Optional[dict] = None,
-        payload_update: Optional[dict] = None,
-    ):
-        server_canyon = canyon if canyon is not None else official_canyon(SELECTION_ID, SELECTION_ID)
-        with ExitStack() as stack:
-            stack.enter_context(
-                patch.object(
-                    main,
-                    "_lookup_building_selection",
-                    AsyncMock(return_value=building if building is not None else server_building()),
-                )
-            )
-            stack.enter_context(patch.object(main, "fetch_weather_safe", AsyncMock(return_value=weather)))
-            stack.enter_context(patch.object(main, "fetch_kp_index_safe", AsyncMock(return_value=3.0)))
-            stack.enter_context(patch.object(main, "fetch_kma_upper_air_profile_safe", AsyncMock(return_value=None)))
-            stack.enter_context(patch.object(main, "fetch_kma_wind_profiler_profile_safe", AsyncMock(return_value=None)))
-            stack.enter_context(
-                patch.object(
-                    main,
-                    "fetch_road_width_evidence",
-                    AsyncMock(
-                        return_value={
-                            "available": True,
-                            "official_available": True,
-                            "width_m": 49.7,
-                            "source": "official_road_right_of_way",
-                            "source_chain": ["vworld_wfs", "official_road_right_of_way"],
-                        }
-                    ),
-                )
-            )
-            stack.enter_context(patch.object(main, "fetch_canyon_width_evidence", AsyncMock(return_value=server_canyon)))
-            payload = dict(self.request_payload)
-            payload.update(payload_update or {})
-            return self.client.post("/api/evaluate", json=payload)
-
-    def assert_hold_without_exact_outputs(self, payload: dict, reason_code: str) -> None:
-        self.assertEqual(payload["final_judgment"], "HOLD")
-        self.assertIsNone(payload["urban_factors"]["Fcanyon"])
-        self.assertIsNone(payload["urban_factors"]["Fcanyon_raw"])
-        self.assertIsNone(payload["ews"])
-        self.assertIsNone(payload["correlation_id"])
-        self.assertIn(reason_code, payload["input_quality"]["reasons"])
+class Task9AuthoritySnapshotTests(AuthoritySnapshotTestCase):
 
     def test_verified_snapshot_binds_one_backend_correlation_to_every_receipt(self) -> None:
         response = self._post(verified_kma_weather())
@@ -123,6 +39,8 @@ class Task9AuthoritySnapshotTests(unittest.TestCase):
         self.assertEqual(payload["canyon_evidence"]["receipt"]["correlation_id"], correlation_id)
         self.assertEqual(payload["weather_evidence"]["correlation_id"], correlation_id)
         self.assertEqual(payload["weather_evidence"]["receipt"]["correlation_id"], correlation_id)
+        self.assertEqual(payload["weather_evidence"]["receipt"]["selection_id"], SELECTION_ID)
+        self.assertEqual(payload["weather_evidence"]["receipt"]["source"], "kma_surface_observation")
         self.assertEqual(payload["building_selection"]["correlation_id"], correlation_id)
 
     def test_kma_label_without_receipt_forces_hold(self) -> None:

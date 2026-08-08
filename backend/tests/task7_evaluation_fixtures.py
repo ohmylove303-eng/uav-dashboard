@@ -90,12 +90,14 @@ def authoritative_weather(
         "kind": "kma_weather_observation",
         "receipt_id": "kma-surface-deterministic-fixture",
         "authority_source": "kma_surface_observation",
+        "source": "kma_surface_observation",
         "observed_at_utc": observed_at.isoformat(),
         "expires_at_utc": (observed_at + timedelta(hours=1)).isoformat(),
         "latitude": latitude,
         "longitude": longitude,
         "values": dict(values),
         "source_chain": ["kma_surface_observation"],
+        "stale_cache": False,
     }
     if selection_id is not None:
         receipt["selection_id"] = selection_id

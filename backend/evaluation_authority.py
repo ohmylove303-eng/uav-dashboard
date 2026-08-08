@@ -1,7 +1,10 @@
 """Validation and binding for one authoritative evaluation snapshot."""
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Final, List, Optional
+from typing import Any, Dict, Final, List, Literal, Optional, Union
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
 
 
 KMA_WEATHER_SOURCES: Final = frozenset({
@@ -18,6 +21,37 @@ DECISION_WEATHER_FIELDS: Final = (
 )
 
 
+class WeatherEvidenceContext(BaseModel):
+    """Trusted server context required to bind a weather receipt to a decision."""
+
+    model_config = ConfigDict(frozen=True)
+
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    selection_id: Optional[str] = None
+    selection_snapshot_id: Optional[str] = None
+    require_selection_binding: bool = False
+
+
+class AuthoritativeWeatherReceipt(BaseModel):
+    """Parsed KMA receipt accepted by the flight-decision authority boundary."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    kind: Literal["kma_weather_observation"]
+    receipt_id: StrictStr = Field(min_length=1)
+    authority_source: StrictStr
+    source: StrictStr
+    source_chain: tuple[StrictStr, ...] = Field(min_length=1)
+    stale_cache: Literal[False]
+    selection_id: Optional[UUID] = None
+    observed_at_utc: datetime
+    expires_at_utc: datetime
+    latitude: float
+    longitude: float
+    values: dict[StrictStr, Union[float, int]]
+
+
 def _normalize_source_chain(*parts: Any) -> List[str]:
     chain: List[str] = []
     for part in parts:
@@ -29,35 +63,24 @@ def _normalize_source_chain(*parts: Any) -> List[str]:
     return chain
 
 
-def _parse_utc_timestamp(value: Any) -> Optional[datetime]:
-    if not isinstance(value, str) or not value.strip():
-        return None
+def _is_uuid(value: str) -> bool:
     try:
-        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        UUID(value)
     except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return None
-    return parsed.astimezone(timezone.utc)
+        return False
+    return True
 
 
-def _receipt_values_match(weather: Dict[str, Any], receipt: Dict[str, Any]) -> bool:
-    values = receipt.get("values")
-    return bool(
-        isinstance(values, dict)
-        and all(field in values and values[field] == weather.get(field) for field in DECISION_WEATHER_FIELDS)
-    )
+def _receipt_values_match(weather: Dict[str, Any], receipt: AuthoritativeWeatherReceipt) -> bool:
+    return all(field in receipt.values and receipt.values[field] == weather.get(field) for field in DECISION_WEATHER_FIELDS)
 
 
 def build_weather_evidence(
     weather: Dict[str, Any],
-    upper_air: Optional[Dict[str, Any]] = None,
-    wind_profiler: Optional[Dict[str, Any]] = None,
     *,
-    latitude: Optional[float] = None,
-    longitude: Optional[float] = None,
-    selection_id: Optional[str] = None,
-    now: Optional[datetime] = None,
+    context: WeatherEvidenceContext,
+    upper_air_available: bool = False,
+    wind_profiler_available: bool = False,
 ) -> Dict[str, Any]:
     """Return decision authority only for a complete, fresh KMA receipt."""
     source_chain = _normalize_source_chain(weather.get("source_chain") or [], weather.get("source"))
@@ -66,11 +89,14 @@ def build_weather_evidence(
     authority_source = weather.get("authority_source")
     receipt = dict(weather.get("receipt") or {}) if isinstance(weather.get("receipt"), dict) else {}
     reason = weather.get("reason")
+    parsed_receipt: Optional[AuthoritativeWeatherReceipt] = None
 
     if not available:
         reason = reason or "authoritative_weather_missing"
     elif stale_cache:
         reason = "weather_cache_expired"
+    elif weather.get("authoritative") is not True:
+        reason = "authoritative_weather_untrusted"
     elif source_chain and not any(source in KMA_WEATHER_SOURCES for source in source_chain):
         reason = "authoritative_weather_untrusted"
     elif not authority_source:
@@ -79,34 +105,61 @@ def build_weather_evidence(
         reason = "authoritative_weather_untrusted"
     elif not receipt:
         reason = "authoritative_weather_receipt_missing"
-    elif receipt.get("kind") != "kma_weather_observation" or not receipt.get("receipt_id"):
-        reason = "authoritative_weather_receipt_invalid"
-    elif receipt.get("authority_source") != authority_source:
-        reason = "authoritative_weather_receipt_mismatch"
     else:
-        observed_at = _parse_utc_timestamp(receipt.get("observed_at_utc"))
-        expires_at = _parse_utc_timestamp(receipt.get("expires_at_utc"))
-        current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        if observed_at is None or expires_at is None:
+        receipt_selection_id = receipt.get("selection_id")
+        if context.require_selection_binding and receipt_selection_id is None:
+            reason = "weather_selection_id_missing"
+        elif receipt_selection_id is not None and not isinstance(receipt_selection_id, str):
+            reason = "weather_selection_id_invalid"
+        elif isinstance(receipt_selection_id, str) and not _is_uuid(receipt_selection_id):
+            reason = "weather_selection_id_invalid"
+        elif context.require_selection_binding and not context.selection_snapshot_id:
+            reason = "weather_selection_snapshot_missing"
+        elif not receipt.get("observed_at_utc") or not receipt.get("expires_at_utc"):
             reason = "weather_freshness_missing"
-        elif observed_at > current_time or expires_at <= observed_at:
-            reason = "weather_freshness_invalid"
-        elif expires_at <= current_time:
-            reason = "weather_receipt_expired"
-        elif latitude is not None and receipt.get("latitude") != latitude:
-            reason = "authoritative_weather_receipt_mismatch"
-        elif longitude is not None and receipt.get("longitude") != longitude:
-            reason = "authoritative_weather_receipt_mismatch"
-        elif not _receipt_values_match(weather, receipt):
-            reason = "authoritative_weather_receipt_mismatch"
-        elif receipt.get("selection_id") not in (None, selection_id):
-            reason = "selection_snapshot_mismatch"
+        elif not receipt.get("source"):
+            reason = "authoritative_weather_receipt_source_missing"
+        elif not isinstance(receipt.get("source_chain"), list) or not receipt["source_chain"]:
+            reason = "authoritative_weather_receipt_source_chain_missing"
+        elif receipt.get("stale_cache") is not False:
+            reason = "weather_receipt_stale"
         else:
-            reason = None
+            try:
+                parsed_receipt = AuthoritativeWeatherReceipt.model_validate(receipt)
+            except ValidationError:
+                reason = "authoritative_weather_receipt_invalid"
+            else:
+                receipt_source_chain = list(parsed_receipt.source_chain)
+                observed_at = parsed_receipt.observed_at_utc
+                expires_at = parsed_receipt.expires_at_utc
+                current_time = datetime.now(timezone.utc)
+                if parsed_receipt.authority_source != authority_source:
+                    reason = "authoritative_weather_receipt_mismatch"
+                elif parsed_receipt.source != authority_source or receipt_source_chain != source_chain:
+                    reason = "authoritative_weather_receipt_mismatch"
+                elif observed_at.tzinfo is None or expires_at.tzinfo is None:
+                    reason = "weather_freshness_missing"
+                elif observed_at > current_time or expires_at <= observed_at:
+                    reason = "weather_freshness_invalid"
+                elif expires_at <= current_time:
+                    reason = "weather_receipt_expired"
+                elif context.latitude is not None and parsed_receipt.latitude != context.latitude:
+                    reason = "authoritative_weather_receipt_mismatch"
+                elif context.longitude is not None and parsed_receipt.longitude != context.longitude:
+                    reason = "authoritative_weather_receipt_mismatch"
+                elif not _receipt_values_match(weather, parsed_receipt):
+                    reason = "authoritative_weather_receipt_mismatch"
+                elif context.require_selection_binding and parsed_receipt.selection_id is None:
+                    reason = "weather_selection_id_missing"
+                elif context.require_selection_binding and str(parsed_receipt.selection_id) != context.selection_id:
+                    reason = "selection_snapshot_mismatch"
+                elif context.require_selection_binding and context.selection_snapshot_id != context.selection_id:
+                    reason = "selection_snapshot_mismatch"
+                else:
+                    reason = None
 
-    authoritative = bool(available and not stale_cache and reason is None)
-    if authoritative and selection_id is not None:
-        receipt["selection_id"] = selection_id
+    authoritative = bool(available and weather.get("authoritative") is True and not stale_cache and reason is None)
+    accepted_receipt = parsed_receipt.model_dump(mode="json") if authoritative and parsed_receipt else receipt
     return {
         "available": available,
         "authoritative": authoritative,
@@ -118,10 +171,10 @@ def build_weather_evidence(
         "profile_source": weather.get("profile_source"),
         "stale_cache": stale_cache,
         "reason": reason,
-        "upper_air_available": bool(upper_air),
-        "wind_profiler_available": bool(wind_profiler),
-        "selection_id": selection_id if authoritative else receipt.get("selection_id"),
-        "receipt": receipt or None,
+        "upper_air_available": upper_air_available,
+        "wind_profiler_available": wind_profiler_available,
+        "selection_id": str(parsed_receipt.selection_id) if authoritative and parsed_receipt and parsed_receipt.selection_id else receipt.get("selection_id"),
+        "receipt": accepted_receipt or None,
         "provenance_status": "verified" if authoritative else "rejected",
     }
 

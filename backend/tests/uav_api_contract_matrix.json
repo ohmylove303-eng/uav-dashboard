@@ -11,6 +11,18 @@
     "rule": "backend-generated on evaluate only; client input is rejected"
   },
   "evaluation_statuses": ["GO", "RESTRICT", "NO_GO", "HOLD"],
+  "presentation_boundary": {
+    "owner": "frontend Task 10 display adapter",
+    "api_field": "final_judgment",
+    "api_values": ["GO", "RESTRICT", "NO_GO", "HOLD"],
+    "display_labels": {
+      "GO": "GO",
+      "RESTRICT": "RESTRICT",
+      "NO_GO": "NO-GO",
+      "HOLD": "HOLD"
+    },
+    "rule": "The backend emits only canonical API values; display labels are not accepted as API aliases."
+  },
   "endpoints": [
     {
       "id": "building_footprint",

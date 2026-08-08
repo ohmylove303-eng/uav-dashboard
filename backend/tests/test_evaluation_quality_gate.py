@@ -91,7 +91,11 @@ class EvaluationQualityGateTests(unittest.TestCase):
                 },
             },
         }
-        self.authoritative_weather = authoritative_weather(latitude=37.5665, longitude=126.9780)
+        self.authoritative_weather = authoritative_weather(
+            latitude=37.5665,
+            longitude=126.9780,
+            selection_id=SELECTION_ID,
+        )
 
     def test_all_official_inputs_allow_a_normal_verdict(self):
         with (

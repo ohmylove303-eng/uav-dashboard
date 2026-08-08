@@ -22,7 +22,11 @@ import re
 import secrets
 import time
 from uuid import NAMESPACE_URL, uuid5
-from evaluation_authority import bind_correlation, build_weather_evidence as _build_weather_evidence
+from evaluation_authority import (
+    WeatherEvidenceContext,
+    bind_correlation,
+    build_weather_evidence as _build_weather_evidence,
+)
 from urban_canyon import measure_facade_gap
 from official_building_registry import enrich_verified_footprint, service_key_configured as molit_building_hub_key_configured
 
@@ -691,7 +695,9 @@ def _make_fresh_weather_cache_payload(payload: Dict[str, Any]) -> Dict[str, Any]
     if isinstance(cached.get("receipt"), dict):
         receipt = dict(cached["receipt"])
         receipt["authority_source"] = "kma_surface_cache"
+        receipt["source"] = "kma_surface_cache"
         receipt["source_chain"] = _normalize_source_chain(["kma_surface_cache"], receipt.get("source_chain"))
+        receipt["stale_cache"] = False
         cached["receipt"] = receipt
     return cached
 
@@ -2727,11 +2733,13 @@ async def get_weather_api(
     w = _attach_weather_provenance(w, upper_air, wind_profiler)
     weather_evidence = _build_weather_evidence(
         w,
-        upper_air,
-        wind_profiler,
-        latitude=lat,
-        longitude=lon,
-        selection_id=selection_id,
+        context=WeatherEvidenceContext(
+            latitude=lat,
+            longitude=lon,
+            selection_id=selection_id,
+        ),
+        upper_air_available=bool(upper_air),
+        wind_profiler_available=bool(wind_profiler),
     )
     return _attach_api_contract(
         {
@@ -2938,11 +2946,19 @@ async def evaluate_flight(request: EvaluationRequest):
     canyon_evidence = _normalize_canyon_evidence(raw_canyon_evidence)
     weather_evidence = _build_weather_evidence(
         weather,
-        upper_air,
-        wind_profiler,
-        latitude=request.latitude,
-        longitude=request.longitude,
-        selection_id=request.selection_id,
+        context=WeatherEvidenceContext(
+            latitude=request.latitude,
+            longitude=request.longitude,
+            selection_id=request.selection_id,
+            selection_snapshot_id=(
+                building_selection.get("selection_id")
+                if isinstance(building_selection, dict)
+                else None
+            ),
+            require_selection_binding=True,
+        ),
+        upper_air_available=bool(upper_air),
+        wind_profiler_available=bool(wind_profiler),
     )
     input_quality = _build_input_quality(
         building_evidence,
