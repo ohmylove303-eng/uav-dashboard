@@ -22,6 +22,7 @@ import re
 import secrets
 import time
 from uuid import NAMESPACE_URL, uuid5
+from evaluation_authority import bind_correlation, build_weather_evidence as _build_weather_evidence
 from urban_canyon import measure_facade_gap
 from official_building_registry import enrich_verified_footprint, service_key_configured as molit_building_hub_key_configured
 
@@ -153,7 +154,7 @@ class JudgmentLevel(str, Enum):
     HOLD = "HOLD"
     GO = "GO"
     RESTRICT = "RESTRICT"
-    NO_GO = "NO-GO"
+    NO_GO = "NO_GO"
 
 class DroneModel(str, Enum):
     MINI_3 = "DJI Mini 3 Pro"
@@ -687,39 +688,12 @@ def _make_fresh_weather_cache_payload(payload: Dict[str, Any]) -> Dict[str, Any]
     cached["authoritative"] = True
     cached["authority_source"] = "kma_surface_cache"
     cached["stale_cache"] = False
+    if isinstance(cached.get("receipt"), dict):
+        receipt = dict(cached["receipt"])
+        receipt["authority_source"] = "kma_surface_cache"
+        receipt["source_chain"] = _normalize_source_chain(["kma_surface_cache"], receipt.get("source_chain"))
+        cached["receipt"] = receipt
     return cached
-
-
-def _build_weather_evidence(
-    weather: Dict[str, Any],
-    upper_air: Optional[Dict[str, Any]] = None,
-    wind_profiler: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    source_chain = _normalize_source_chain(weather.get("source_chain") or [], weather.get("source"))
-    stale_cache = bool(weather.get("stale_cache", False))
-    authoritative = bool(weather.get("authoritative")) and _weather_is_authoritative(source_chain, stale_cache)
-    if not authoritative:
-        authoritative = _weather_is_authoritative(source_chain, stale_cache)
-    available = bool(weather.get("available", "weather_unavailable" not in source_chain))
-    if weather.get("reason") == "surface_weather_timeout":
-        available = False
-    status = "official_verified" if authoritative else ("unavailable" if not available else "estimated")
-    authority_source = weather.get("authority_source")
-    if authoritative and not authority_source:
-        authority_source = next((token for token in source_chain if token in AUTHORITATIVE_WEATHER_SOURCE_TOKENS), source_chain[0] if source_chain else None)
-    return {
-        "available": available,
-        "authoritative": authoritative,
-        "status": status,
-        "source": weather.get("source"),
-        "source_chain": source_chain,
-        "authority_source": authority_source,
-        "profile_source": weather.get("profile_source"),
-        "stale_cache": stale_cache,
-        "reason": weather.get("reason"),
-        "upper_air_available": bool(upper_air),
-        "wind_profiler_available": bool(wind_profiler),
-    }
 
 
 def _build_building_evidence(request: EvaluationRequest) -> Dict[str, Any]:
@@ -781,6 +755,9 @@ def _build_building_evidence(request: EvaluationRequest) -> Dict[str, Any]:
         "confidence": _clamp(request.building_confidence if request.building_confidence is not None else provided.get("confidence", 0.72)),
         "height_receipt_complete": height_receipt_complete,
         "height_is_floor_derived": height_is_floor_derived,
+        "reason": provided.get("reason") or (
+            "official_registry_height_missing" if height_is_floor_derived else None
+        ),
         "selection_id": receipt.get("selection_id"),
         "receipt": receipt,
     }
@@ -821,7 +798,7 @@ def _build_input_quality(
 
     if not building_evidence.get("official_available"):
         missing_prerequisites.append("building")
-        reasons.append(f'building:{building_evidence.get("status")}')
+        reasons.append(f'building:{building_evidence.get("reason") or building_evidence.get("status")}')
     if not canyon_evidence.get("official_available"):
         missing_prerequisites.append("canyon_width")
         reasons.append(f'canyon_width:{canyon_evidence.get("reason") or canyon_evidence.get("status")}')
@@ -835,6 +812,8 @@ def _build_input_quality(
             ("canyon_width", canyon_evidence),
             ("weather", weather_evidence),
         ):
+            if prerequisite in missing_prerequisites:
+                continue
             receipt = evidence.get("receipt") if isinstance(evidence.get("receipt"), dict) else {}
             if (
                 evidence.get("selection_id") != selection_id
@@ -849,6 +828,11 @@ def _build_input_quality(
         "status": status,
         "missing_prerequisites": missing_prerequisites,
         "reasons": reasons,
+        "provenance_status": {
+            "building": building_evidence.get("status"),
+            "canyon_width": canyon_evidence.get("status"),
+            "weather": weather_evidence.get("status"),
+        },
     }
 
 
@@ -2741,7 +2725,14 @@ async def get_weather_api(
     if source_suffixes:
         w["source"] = f'{w.get("source", "open_meteo_surface")} + {", ".join(source_suffixes)}'
     w = _attach_weather_provenance(w, upper_air, wind_profiler)
-    weather_evidence = _build_weather_evidence(w, upper_air, wind_profiler)
+    weather_evidence = _build_weather_evidence(
+        w,
+        upper_air,
+        wind_profiler,
+        latitude=lat,
+        longitude=lon,
+        selection_id=selection_id,
+    )
     return _attach_api_contract(
         {
             "weather": w,
@@ -2945,18 +2936,14 @@ async def evaluate_flight(request: EvaluationRequest):
             building_selection,
         )
     canyon_evidence = _normalize_canyon_evidence(raw_canyon_evidence)
-    weather_evidence = _build_weather_evidence(weather, upper_air, wind_profiler)
-    if request.selection_id is not None:
-        weather_evidence["selection_id"] = request.selection_id
-        if weather_evidence.get("available") and weather_evidence.get("authoritative"):
-            weather_evidence["receipt"] = {
-                "kind": "authoritative_weather_observation",
-                "selection_id": request.selection_id,
-                "authority_source": weather_evidence.get("authority_source"),
-                "source_chain": weather_evidence.get("source_chain") or [],
-            }
-        else:
-            weather_evidence["receipt"] = None
+    weather_evidence = _build_weather_evidence(
+        weather,
+        upper_air,
+        wind_profiler,
+        latitude=request.latitude,
+        longitude=request.longitude,
+        selection_id=request.selection_id,
+    )
     input_quality = _build_input_quality(
         building_evidence,
         road_evidence,
@@ -3116,6 +3103,12 @@ async def evaluate_flight(request: EvaluationRequest):
         step_m=5
     )
     
+    correlation_id = secrets.token_urlsafe(18)
+    building_evidence = bind_correlation(building_evidence, correlation_id)
+    road_evidence = bind_correlation(road_evidence, correlation_id)
+    canyon_evidence = bind_correlation(canyon_evidence, correlation_id)
+    weather_evidence = bind_correlation(weather_evidence, correlation_id)
+    building_selection = bind_correlation(building_selection, correlation_id)
     return EvaluationResponse(
         timestamp=datetime.now().isoformat(),
         location={"lat": request.latitude, "lon": request.longitude},
@@ -3162,7 +3155,7 @@ async def evaluate_flight(request: EvaluationRequest):
         stale_cache=stale_cache,
         official_available=True,
         selection_id=request.selection_id,
-        correlation_id=secrets.token_urlsafe(18),
+        correlation_id=correlation_id,
         building_selection=building_selection,
     )
 

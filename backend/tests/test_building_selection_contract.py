@@ -14,6 +14,7 @@ import main  # noqa: E402
 from tests.task7_evaluation_fixtures import (  # noqa: E402
     CANYON_RECEIPT_IDS,
     CANYON_RECEIPT_SOURCES,
+    authoritative_weather,
 )
 
 
@@ -234,19 +235,7 @@ class BuildingSelectionContractTests(unittest.TestCase):
                 },
             },
         }
-        weather = {
-            "available": True,
-            "authoritative": True,
-            "authority_source": "kma_surface_observation",
-            "source": "kma_surface_observation",
-            "source_chain": ["kma_surface_observation"],
-            "profile_source": "surface_only",
-            "stale_cache": False,
-            "wind_speed": 5.0, "gust_speed": 7.5, "wind_direction": 90,
-            "visibility": 12.0, "precipitation_prob": 0, "weather_code": 0,
-            "temperature": 20, "dew_point": 14, "humidity": 50, "cloud_cover": 20,
-            "sunrise": "06:00", "sunset": "18:00",
-        }
+        weather = authoritative_weather()
         road = {
             "available": True, "official_available": True, "width_m": 49.7,
             "source": "official_road_right_of_way",

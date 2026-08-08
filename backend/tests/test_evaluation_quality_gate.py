@@ -15,6 +15,7 @@ from tests.task7_evaluation_fixtures import (  # noqa: E402
     CANYON_RECEIPT_IDS,
     CANYON_RECEIPT_SOURCES,
     SELECTION_ID,
+    authoritative_weather,
     server_building,
 )
 
@@ -90,27 +91,7 @@ class EvaluationQualityGateTests(unittest.TestCase):
                 },
             },
         }
-        self.authoritative_weather = {
-            "wind_speed": 5.0,
-            "gust_speed": 7.5,
-            "wind_direction": 90,
-            "visibility": 12.0,
-            "precipitation_prob": 0,
-            "weather_code": 0,
-            "temperature": 20,
-            "dew_point": 14,
-            "humidity": 50,
-            "cloud_cover": 20,
-            "sunrise": "06:00",
-            "sunset": "18:00",
-            "source": "kma_surface_observation",
-            "source_chain": ["kma_surface_observation"],
-            "profile_source": "surface_only",
-            "stale_cache": False,
-            "available": True,
-            "authoritative": True,
-            "authority_source": "kma_surface_observation",
-        }
+        self.authoritative_weather = authoritative_weather(latitude=37.5665, longitude=126.9780)
 
     def test_all_official_inputs_allow_a_normal_verdict(self):
         with (

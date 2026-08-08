@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 
@@ -71,7 +72,33 @@ def server_building(*, official_height: bool = True) -> dict:
     }
 
 
-def authoritative_weather() -> dict:
+def authoritative_weather(
+    *,
+    latitude: float = 37.5662952,
+    longitude: float = 126.9779451,
+    selection_id: Optional[str] = None,
+) -> dict:
+    observed_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    values = {
+        "wind_speed": 5.0,
+        "gust_speed": 7.5,
+        "visibility": 12.0,
+        "precipitation_prob": 0,
+        "weather_code": 0,
+    }
+    receipt = {
+        "kind": "kma_weather_observation",
+        "receipt_id": "kma-surface-deterministic-fixture",
+        "authority_source": "kma_surface_observation",
+        "observed_at_utc": observed_at.isoformat(),
+        "expires_at_utc": (observed_at + timedelta(hours=1)).isoformat(),
+        "latitude": latitude,
+        "longitude": longitude,
+        "values": dict(values),
+        "source_chain": ["kma_surface_observation"],
+    }
+    if selection_id is not None:
+        receipt["selection_id"] = selection_id
     return {
         "available": True,
         "authoritative": True,
@@ -80,18 +107,15 @@ def authoritative_weather() -> dict:
         "source_chain": ["kma_surface_observation"],
         "profile_source": "surface_only",
         "stale_cache": False,
-        "wind_speed": 5.0,
-        "gust_speed": 7.5,
+        **values,
         "wind_direction": 90,
-        "visibility": 12.0,
-        "precipitation_prob": 0,
-        "weather_code": 0,
         "temperature": 20,
         "dew_point": 14,
         "humidity": 50,
         "cloud_cover": 20,
         "sunrise": "06:00",
         "sunset": "18:00",
+        "receipt": receipt,
     }
 
 

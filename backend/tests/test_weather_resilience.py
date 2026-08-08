@@ -11,6 +11,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 import main  # noqa: E402
+from tests.task7_evaluation_fixtures import authoritative_weather  # noqa: E402
 
 
 class WeatherResilienceTests(unittest.IsolatedAsyncioTestCase):
@@ -23,24 +24,7 @@ class WeatherResilienceTests(unittest.IsolatedAsyncioTestCase):
         main._cache_set(
             main.WEATHER_CACHE,
             cache_key,
-            {
-                "wind_speed": 6.0,
-                "gust_speed": 8.0,
-                "wind_direction": 180,
-                "visibility": 10.0,
-                "precipitation_prob": 20,
-                "weather_code": 0,
-                "temperature": 22.0,
-                "dew_point": 16.0,
-                "humidity": 55,
-                "cloud_cover": 10,
-                "sunrise": "05:10",
-                "sunset": "19:55",
-                "source": "kma_surface_observation",
-                "source_chain": ["kma_surface_observation"],
-                "profile_source": "surface_only",
-                "stale_cache": False,
-            },
+            authoritative_weather(latitude=37.5665, longitude=126.9780),
         )
 
         with patch.object(main, "fetch_weather", AsyncMock(side_effect=TimeoutError("boom"))):
@@ -55,24 +39,7 @@ class WeatherResilienceTests(unittest.IsolatedAsyncioTestCase):
         cache_key = main._cache_key_for_latlon(37.5665, 126.9780)
         main.WEATHER_CACHE[cache_key] = {
             "ts": 0.0,
-            "value": {
-                "wind_speed": 6.0,
-                "gust_speed": 8.0,
-                "wind_direction": 180,
-                "visibility": 10.0,
-                "precipitation_prob": 20,
-                "weather_code": 0,
-                "temperature": 22.0,
-                "dew_point": 16.0,
-                "humidity": 55,
-                "cloud_cover": 10,
-                "sunrise": "05:10",
-                "sunset": "19:55",
-                "source": "kma_surface_observation",
-                "source_chain": ["kma_surface_observation"],
-                "profile_source": "surface_only",
-                "stale_cache": False,
-            },
+            "value": authoritative_weather(latitude=37.5665, longitude=126.9780),
         }
 
         with patch.object(main, "fetch_weather", AsyncMock(side_effect=TimeoutError("boom"))):
