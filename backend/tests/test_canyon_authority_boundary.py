@@ -87,6 +87,7 @@ class CanyonAuthorityBoundaryTests(unittest.TestCase):
             37.5662952,
             126.9779451,
             selection_id=SELECTION_ID,
+            target_identifier={"kind": "native_feature_id", "value": "lt_c_spbd.7"},
         )
         self.assertEqual(payload["final_judgment"], "HOLD")
         self.assertFalse(payload["official_available"])
@@ -134,6 +135,7 @@ class CanyonAuthorityBoundaryTests(unittest.TestCase):
             37.5662952,
             126.9779451,
             selection_id=SELECTION_ID,
+            target_identifier={"kind": "native_feature_id", "value": "lt_c_spbd.7"},
         )
         self.assertEqual(response.selection_id, SELECTION_ID)
         self.assertTrue(response.official_available)
@@ -206,6 +208,7 @@ class CanyonAuthorityBoundaryTests(unittest.TestCase):
                     37.5662952,
                     126.9779451,
                     selection_id=SELECTION_ID,
+                    target_identifier={"kind": "native_feature_id", "value": "lt_c_spbd.7"},
                 )
                 if unavailable_reason is not None:
                     self.assertEqual(payload["final_judgment"], "HOLD")
@@ -225,6 +228,79 @@ class CanyonAuthorityBoundaryTests(unittest.TestCase):
                     self.assertEqual(payload["weather_evidence"]["receipt"]["selection_id"], SELECTION_ID)
                     self.assertEqual(payload["building_selection"]["selection_id"], SELECTION_ID)
                     self.assertIsInstance(payload["correlation_id"], str)
+
+    def test_same_selection_uuid_with_a_different_target_building_without_an_official_identifier_holds(self) -> None:
+        canyon = official_canyon(
+            SELECTION_ID,
+            SELECTION_ID,
+            target_building_id="different-target-building",
+            target_native_feature_id=None,
+        )
+        stack, _ = self._authority_stack(canyon)
+
+        with stack:
+            response = self.client.post(
+                "/api/evaluate",
+                json={
+                    "latitude": 37.5662952,
+                    "longitude": 126.9779451,
+                    "selection_id": SELECTION_ID,
+                },
+            )
+
+        payload = response.json()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["final_judgment"], "HOLD")
+        self.assertFalse(payload["canyon_evidence"]["official_available"])
+        self.assertEqual(payload["canyon_evidence"]["reason"], "canyon_target_identifier_missing")
+        self.assertIsNone(payload["urban_factors"]["Fcanyon"])
+        self.assertIsNone(payload["correlation_id"])
+
+    def test_missing_target_identifier_holds_even_when_the_selection_uuid_matches(self) -> None:
+        canyon = official_canyon(
+            SELECTION_ID,
+            SELECTION_ID,
+            target_native_feature_id=None,
+        )
+        stack, _ = self._authority_stack(canyon)
+
+        with stack:
+            response = self.client.post(
+                "/api/evaluate",
+                json={
+                    "latitude": 37.5662952,
+                    "longitude": 126.9779451,
+                    "selection_id": SELECTION_ID,
+                },
+            )
+
+        payload = response.json()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["final_judgment"], "HOLD")
+        self.assertFalse(payload["canyon_evidence"]["official_available"])
+        self.assertEqual(payload["canyon_evidence"]["reason"], "canyon_target_identifier_missing")
+        self.assertIsNone(payload["urban_factors"]["Fcanyon"])
+        self.assertIsNone(payload["correlation_id"])
+
+    def test_matching_target_identifier_allows_the_verified_facade_gap(self) -> None:
+        stack, _ = self._authority_stack(official_canyon(SELECTION_ID, SELECTION_ID))
+
+        with stack:
+            response = self.client.post(
+                "/api/evaluate",
+                json={
+                    "latitude": 37.5662952,
+                    "longitude": 126.9779451,
+                    "selection_id": SELECTION_ID,
+                },
+            )
+
+        payload = response.json()
+        self.assertEqual(response.status_code, 200)
+        self.assertNotEqual(payload["final_judgment"], "HOLD")
+        self.assertTrue(payload["canyon_evidence"]["official_available"])
+        self.assertEqual(payload["canyon_evidence"]["facade_gap_m"], 27.0)
+        self.assertIsInstance(payload["correlation_id"], str)
 
 
 if __name__ == "__main__":

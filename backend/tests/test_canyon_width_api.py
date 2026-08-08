@@ -89,6 +89,21 @@ class CanyonWidthRouteTests(unittest.TestCase):
         }
         self.target_lon, self.target_lat = main._mercator_to_lonlat(10.0, -20.0)
         self.selection_id = "9d88e3aa-17c7-4b75-b7a0-a6db69498ca4"
+        self.selection_lookup = patch.object(
+            main,
+            "_lookup_building_selection",
+            AsyncMock(
+                return_value={
+                    "building_selection": {
+                        "selection_id": self.selection_id,
+                        "status": "official_verified",
+                        "native_feature_id": "target",
+                    }
+                }
+            ),
+        )
+        self.selection_lookup.start()
+        self.addCleanup(self.selection_lookup.stop)
 
     def _params(self):
         return {
@@ -162,11 +177,16 @@ class CanyonWidthRouteTests(unittest.TestCase):
             "source_chain": ["vworld_wfs", "official_building_collection", "official_canyon_width", "official_gis_bridge_receipt"],
             "selection_id": self.selection_id,
             "road_crossing_verified": True,
-            "target_building": {"id": "target", "geometry_receipt": True},
+            "target_building": {
+                "id": "target",
+                "geometry_receipt": True,
+                "native_feature_id": "target",
+            },
             "opposing_building": {"id": "opposite-side", "geometry_receipt": True},
             "receipt": {
                 "kind": "official_canyon_width",
                 "selection_id": self.selection_id,
+                "target_native_feature_id": "target",
                 "target_geometry_receipt": True,
                 "opposing_geometry_receipt": True,
                 "road_geometry_receipt": True,
@@ -212,9 +232,16 @@ class CanyonWidthRouteTests(unittest.TestCase):
             "source_chain": ["vworld_wfs"],
             "selection_id": self.selection_id,
             "road_crossing_verified": True,
+            "target_building": {
+                "id": "target",
+                "geometry_receipt": True,
+                "native_feature_id": "target",
+            },
+            "opposing_building": {"id": "opposite-side", "geometry_receipt": True},
             "receipt": {
                 "kind": "official_canyon_width",
                 "selection_id": self.selection_id,
+                "target_native_feature_id": "target",
                 "target_geometry_receipt": True,
                 "opposing_geometry_receipt": False,
                 "road_geometry_receipt": True,
@@ -231,6 +258,57 @@ class CanyonWidthRouteTests(unittest.TestCase):
         payload = response.json()
         self._assert_unavailable_receipt_bound_to_selection(payload)
         self.assertEqual(payload["reason"], "official_gis_bridge_incomplete_receipt_set")
+
+    def test_route_holds_when_a_bridge_receipt_names_a_different_target_under_the_same_uuid(self):
+        bridge_result = {
+            "available": True,
+            "official_available": True,
+            "facade_gap_m": 27.0,
+            "effective_canyon_width_m": 27.0,
+            "source": "official_gis_bridge_receipt",
+            "source_chain": ["vworld_wfs", "official_building_collection", "official_canyon_width", "official_gis_bridge_receipt"],
+            "selection_id": self.selection_id,
+            "road_crossing_verified": True,
+            "target_building": {
+                "id": "different-target",
+                "geometry_receipt": True,
+                "native_feature_id": "different-target",
+            },
+            "opposing_building": {"id": "opposite-side", "geometry_receipt": True},
+            "receipt": {
+                "kind": "official_canyon_width",
+                "selection_id": self.selection_id,
+                "target_native_feature_id": "different-target",
+                "target_geometry_receipt": True,
+                "opposing_geometry_receipt": True,
+                "road_geometry_receipt": True,
+                "road_crossing_verified": True,
+                "receipt_ids": {
+                    "target_geometry": "d09405f8-c168-5ba7-b928-5102ed0a0d44",
+                    "opposing_geometry": "ec3eff5c-dda4-55b5-b659-865865b8c3b6",
+                    "road_geometry": "1c342204-fb71-5448-ad27-e7298cf93647",
+                    "road_crossing": "8bf5b12e-436a-5889-a72f-4ff6d950f98c",
+                    "facade_gap": "4cce213b-98ba-5118-ad95-8e52c084c72b",
+                },
+                "receipt_sources": {
+                    "target_geometry": "official_gis_bridge_receipt",
+                    "opposing_geometry": "official_gis_bridge_receipt",
+                    "road_geometry": "official_gis_bridge_receipt",
+                    "road_crossing": "official_gis_bridge_receipt",
+                    "facade_gap": "official_gis_bridge_receipt",
+                },
+            },
+        }
+        with (
+            patch.object(main, "fetch_official_gis_bridge_canyon_evidence", AsyncMock(return_value=bridge_result)),
+            patch.object(main, "fetch_road_width_evidence", AsyncMock(side_effect=AssertionError("mismatched target must not use direct fallback"))),
+            patch.object(main, "lookup_official_building_collection", AsyncMock(side_effect=AssertionError("mismatched target must not use direct fallback"))),
+        ):
+            response = self.client.get("/api/canyon-width", params=self._params())
+
+        payload = response.json()
+        self._assert_unavailable_receipt_bound_to_selection(payload)
+        self.assertEqual(payload["reason"], "canyon_target_identifier_mismatch")
 
     def test_route_uses_direct_official_fallback_after_bridge_vworld_upstream_failure(self):
         collection = {
@@ -287,9 +365,16 @@ class CanyonWidthRouteTests(unittest.TestCase):
             "source_chain": ["vworld_wfs", "official_canyon_width"],
             "selection_id": self.selection_id,
             "road_crossing_verified": False,
+            "target_building": {
+                "id": "target",
+                "geometry_receipt": True,
+                "native_feature_id": "target",
+            },
+            "opposing_building": {"id": "opposite-side", "geometry_receipt": True},
             "receipt": {
                 "kind": "official_canyon_width",
                 "selection_id": self.selection_id,
+                "target_native_feature_id": "target",
                 "target_geometry_receipt": True,
                 "opposing_geometry_receipt": True,
                 "road_geometry_receipt": True,

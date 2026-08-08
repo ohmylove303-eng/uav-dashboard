@@ -70,11 +70,16 @@ class EvaluationQualityGateTests(unittest.TestCase):
                 "road_crossing_verified": True,
                 "source": "direct_vworld_official_receipt",
                 "source_chain": ["vworld_wfs", "official_canyon_width", "direct_vworld_official_receipt"],
-                "target_building": {"id": "target-7", "geometry_receipt": True},
+                "target_building": {
+                    "id": "target-7",
+                    "geometry_receipt": True,
+                    "native_feature_id": "lt_c_spbd.7",
+                },
                 "opposing_building": {"id": "opposing-7", "geometry_receipt": True},
                 "receipt": {
                     "kind": "official_canyon_width",
                     "selection_id": SELECTION_ID,
+                    "target_native_feature_id": "lt_c_spbd.7",
                     "target_geometry_receipt": True,
                     "opposing_geometry_receipt": True,
                     "road_geometry_receipt": True,

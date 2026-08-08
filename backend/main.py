@@ -430,9 +430,14 @@ def _canyon_cache_key(
     lon: float,
     road_name: Optional[str],
     selection_id: Optional[str] = None,
+    target_identifier: Optional[Dict[str, str]] = None,
 ) -> str:
     normalized_road_name = " ".join(str(road_name or "").split()).lower()
-    return f"{_round_coord(lat, 5)},{_round_coord(lon, 5)}:{normalized_road_name}:{selection_id or ''}"
+    identifier = target_identifier or {}
+    return (
+        f"{_round_coord(lat, 5)},{_round_coord(lon, 5)}:{normalized_road_name}:"
+        f"{selection_id or ''}:{identifier.get('kind', '')}:{identifier.get('value', '')}"
+    )
 
 
 def _mark_source_suffix(payload: Optional[Dict[str, Any]], suffix: str, fallback_source: str) -> Optional[Dict[str, Any]]:
@@ -1183,6 +1188,44 @@ CANYON_RECEIPT_SOURCES = {
     "official_gis_bridge_receipt",
     "direct_vworld_official_receipt",
 }
+CANYON_TARGET_IDENTIFIER_KINDS = ("native_feature_id", "bd_mgt_sn")
+
+
+def _stable_canyon_identifier_value(value: Any) -> Optional[str]:
+    """Reject absent and synthetic feature IDs from canyon authority evidence."""
+    identifier = str(value or "").strip()
+    if not identifier or re.fullmatch(r"(?:vworld-building-\d+|target-building|official-building)", identifier):
+        return None
+    return identifier
+
+
+def _canyon_target_identifier(building_selection: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+    """Choose the Task-7 official building identity used to bind canyon receipts."""
+    if not isinstance(building_selection, dict):
+        return None
+    for kind in CANYON_TARGET_IDENTIFIER_KINDS:
+        value = _stable_canyon_identifier_value(building_selection.get(kind))
+        if value is not None:
+            return {"kind": kind, "value": value}
+    return None
+
+
+def _canyon_receipt_target_identifier(payload: Any) -> Optional[Dict[str, str]]:
+    """Return the stable target identity only when object and receipt agree."""
+    if not isinstance(payload, dict):
+        return None
+    target = payload.get("target_building")
+    receipt = payload.get("receipt")
+    if not isinstance(target, dict) or not isinstance(receipt, dict):
+        return None
+    for kind in CANYON_TARGET_IDENTIFIER_KINDS:
+        target_value = _stable_canyon_identifier_value(target.get(kind))
+        receipt_value = _stable_canyon_identifier_value(
+            receipt.get(f"target_{kind}") or receipt.get(kind)
+        )
+        if target_value is not None and target_value == receipt_value:
+            return {"kind": kind, "value": target_value}
+    return None
 
 
 def _canyon_receipt_bundle(
@@ -1220,6 +1263,7 @@ def _canyon_receipt_set_is_verified(
     payload: Any,
     supplier: str,
     selection_id: Optional[str],
+    target_identifier: Optional[Dict[str, str]] = None,
 ) -> bool:
     if not isinstance(payload, dict) or not selection_id or supplier not in CANYON_RECEIPT_SOURCES:
         return False
@@ -1231,6 +1275,7 @@ def _canyon_receipt_set_is_verified(
     target_building = payload.get("target_building")
     opposing_building = payload.get("opposing_building")
     source_chain = _normalize_source_chain(payload.get("source_chain"), payload.get("source"))
+    receipt_target_identifier = _canyon_receipt_target_identifier(payload)
     return bool(
         payload.get("available")
         and payload.get("official_available")
@@ -1244,6 +1289,8 @@ def _canyon_receipt_set_is_verified(
         and isinstance(target_building, dict)
         and target_building.get("id")
         and target_building.get("geometry_receipt") is True
+        and receipt_target_identifier is not None
+        and (target_identifier is None or receipt_target_identifier == target_identifier)
         and isinstance(opposing_building, dict)
         and opposing_building.get("id")
         and opposing_building.get("geometry_receipt") is True
@@ -1359,16 +1406,29 @@ def _select_target_building_from_collection(
 
     selected = candidates[0]
     properties = selected.get("properties") if isinstance(selected.get("properties"), dict) else {}
+    native_feature_id = _stable_canyon_identifier_value(selected.get("id"))
+    bd_mgt_sn = _stable_canyon_identifier_value(properties.get("bd_mgt_sn"))
     return {
-        "id": str(selected.get("id") or properties.get("bd_mgt_sn") or properties.get("pk") or "target-building"),
+        "id": native_feature_id,
         "name": selected.get("name") or properties.get("buld_nm"),
         "ring": selected.get("ring"),
         "properties": properties,
+        "native_feature_id": native_feature_id,
+        "bd_mgt_sn": bd_mgt_sn,
     }
 
 
-def _bridge_canyon_evidence_is_verified(payload: Any, selection_id: Optional[str]) -> bool:
-    if not _canyon_receipt_set_is_verified(payload, "official_gis_bridge_receipt", selection_id):
+def _bridge_canyon_evidence_is_verified(
+    payload: Any,
+    selection_id: Optional[str],
+    target_identifier: Optional[Dict[str, str]],
+) -> bool:
+    if not _canyon_receipt_set_is_verified(
+        payload,
+        "official_gis_bridge_receipt",
+        selection_id,
+        target_identifier,
+    ):
         return False
     source_chain = _normalize_source_chain(payload.get("source_chain"), payload.get("source"))
     return bool(
@@ -1376,9 +1436,17 @@ def _bridge_canyon_evidence_is_verified(payload: Any, selection_id: Optional[str
     )
 
 
-def _bridge_canyon_rejection_reason(payload: Any) -> str:
+def _bridge_canyon_rejection_reason(
+    payload: Any,
+    target_identifier: Optional[Dict[str, str]],
+) -> str:
     if not isinstance(payload, dict):
         return "official_gis_bridge_invalid_payload"
+    receipt_target_identifier = _canyon_receipt_target_identifier(payload)
+    if receipt_target_identifier is None:
+        return "canyon_target_identifier_missing"
+    if target_identifier is not None and receipt_target_identifier != target_identifier:
+        return "canyon_target_identifier_mismatch"
     receipt = payload.get("receipt")
     if (
         payload.get("road_crossing_verified") is not True
@@ -1500,6 +1568,7 @@ async def fetch_official_gis_bridge_canyon_evidence(
     lon: float,
     road_name: Optional[str] = None,
     selection_id: Optional[str] = None,
+    target_identifier: Optional[Dict[str, str]] = None,
 ) -> Optional[Dict[str, Any]]:
     if not OFFICIAL_GIS_BRIDGE_URL or not OFFICIAL_GIS_BRIDGE_TOKEN:
         return None
@@ -1509,6 +1578,9 @@ async def fetch_official_gis_bridge_canyon_evidence(
         params["road_name"] = road_name
     if selection_id:
         params["selection_id"] = selection_id
+    if target_identifier:
+        params["target_identifier_kind"] = target_identifier["kind"]
+        params["target_identifier_value"] = target_identifier["value"]
 
     try:
         async with httpx.AsyncClient(timeout=OFFICIAL_GIS_BRIDGE_TIMEOUT_S) as client:
@@ -1553,13 +1625,19 @@ async def fetch_canyon_width_evidence(
     lon: float,
     road_name: Optional[str] = None,
     selection_id: Optional[str] = None,
+    target_identifier: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     if not selection_id:
         return _bind_unavailable_canyon_to_selection(
             _unavailable_canyon_evidence({}, "canyon_selection_id_missing"),
             selection_id,
         )
-    cache_key = _canyon_cache_key(lat, lon, road_name, selection_id)
+    if target_identifier is None:
+        return _bind_unavailable_canyon_to_selection(
+            _unavailable_canyon_evidence({}, "canyon_target_identifier_missing"),
+            selection_id,
+        )
+    cache_key = _canyon_cache_key(lat, lon, road_name, selection_id, target_identifier)
     cached_evidence = _cache_get(CANYON_EVIDENCE_CACHE, cache_key, CANYON_EVIDENCE_CACHE_TTL_S)
     if cached_evidence:
         return cached_evidence
@@ -1569,8 +1647,9 @@ async def fetch_canyon_width_evidence(
         lon,
         road_name=road_name,
         selection_id=selection_id,
+        target_identifier=target_identifier,
     )
-    if _bridge_canyon_evidence_is_verified(bridge_evidence, selection_id):
+    if _bridge_canyon_evidence_is_verified(bridge_evidence, selection_id, target_identifier):
         return _cache_set(CANYON_EVIDENCE_CACHE, cache_key, _with_official_gis_bridge_provenance(bridge_evidence))
     bridge_fallback_reason: Optional[str] = None
     bridge_upstream_attempts: List[Dict[str, str]] = []
@@ -1587,7 +1666,7 @@ async def fetch_canyon_width_evidence(
         return _bind_unavailable_canyon_to_selection(
             _with_official_gis_bridge_unavailable_provenance(
                 _unavailable_official_gis_bridge_evidence(
-                    _bridge_canyon_rejection_reason(bridge_evidence)
+                    _bridge_canyon_rejection_reason(bridge_evidence, target_identifier)
                 )
             ),
             selection_id,
@@ -1631,6 +1710,8 @@ async def fetch_canyon_width_evidence(
         "name": target.get("name") if target else None,
         "geometry_receipt": bool(target),
         "selection_match": bool(target),
+        "native_feature_id": target.get("native_feature_id") if target else None,
+        "bd_mgt_sn": target.get("bd_mgt_sn") if target else None,
     }
     target_geometry = target.get("ring") if target else None
     if not isinstance(target_geometry, list) or len(target_geometry) < 4:
@@ -1645,13 +1726,37 @@ async def fetch_canyon_width_evidence(
             selection_id,
         )
 
+    actual_target_identifier = _stable_canyon_identifier_value(
+        target_building.get(target_identifier["kind"])
+    )
+    if actual_target_identifier != target_identifier["value"]:
+        reason = (
+            "canyon_target_identifier_missing"
+            if actual_target_identifier is None
+            else "canyon_target_identifier_mismatch"
+        )
+        return _bind_unavailable_canyon_to_selection(
+            _with_official_gis_bridge_fallback_provenance(
+                _with_direct_vworld_provenance(
+                    _unavailable_canyon_evidence(road_evidence, reason, target_building)
+                ),
+                bridge_fallback_reason,
+                bridge_upstream_attempts,
+            ),
+            selection_id,
+        )
+
     buildings = []
     for feature in collection.get("features") or []:
         ring = feature.get("ring") if isinstance(feature, dict) else None
         if not isinstance(ring, list) or len(ring) < 4:
             continue
+        stable_id = _stable_canyon_identifier_value(feature.get("id"))
+        if stable_id is None:
+            continue
         buildings.append({
-            "id": str(feature.get("id") or "official-building"),
+            "id": stable_id,
+            "stable_id": stable_id,
             "name": feature.get("name"),
             "ring": _project_lonlat_ring(ring),
         })
@@ -1701,6 +1806,7 @@ async def fetch_canyon_width_evidence(
     receipt = {
         "kind": "official_canyon_width",
         "selection_id": selection_id,
+        f"target_{target_identifier['kind']}": target_identifier["value"],
         "target_geometry_receipt": True,
         "opposing_geometry_receipt": True,
         "road_geometry_receipt": True,
@@ -1710,8 +1816,14 @@ async def fetch_canyon_width_evidence(
             selection_id,
             "direct_vworld_official_receipt",
             {
-                "target_geometry": projected_target_geometry,
-                "opposing_geometry": opposing_geometry,
+                "target_geometry": {
+                    "identifier": target_identifier,
+                    "ring": projected_target_geometry,
+                },
+                "opposing_geometry": {
+                    "id": opposing_building.get("id"),
+                    "ring": opposing_geometry,
+                },
                 "road_geometry": road_paths[0],
                 "road_crossing": {
                     "normal_alignment": measurement.get("normal_alignment"),
@@ -1792,40 +1904,30 @@ def _bind_canyon_evidence_to_selection(
         object_selection_id == selection_id
         and receipt_selection_id == selection_id
     )
-    selected_native_id = building_selection.get("native_feature_id") if isinstance(building_selection, dict) else None
-    observed_native_ids = [
-        value
-        for value in (
-            target.get("native_feature_id"),
-            receipt.get("native_feature_id"),
-            receipt.get("target_native_feature_id"),
-        )
-        if value
-    ]
-    selected_bd_mgt_sn = building_selection.get("bd_mgt_sn") if isinstance(building_selection, dict) else None
-    observed_bd_mgt_sns = [
-        value
-        for value in (
-            target.get("bd_mgt_sn"),
-            receipt.get("bd_mgt_sn"),
-            receipt.get("target_bd_mgt_sn"),
-        )
-        if value
-    ]
-    geometry_identifiers_match = bool(
-        (not selected_native_id or all(value == selected_native_id for value in observed_native_ids))
-        and (not selected_bd_mgt_sn or all(value == selected_bd_mgt_sn for value in observed_bd_mgt_sns))
-    )
+    selected_target_identifier = _canyon_target_identifier(building_selection)
+    receipt_target_identifier = _canyon_receipt_target_identifier(canyon)
     if not selection_ids_complete:
         canyon = _unavailable_canyon_evidence(
             road_evidence,
             "canyon_selection_id_missing",
             target_building=target or None,
         )
-    elif not (selection_ids_match and geometry_identifiers_match):
+    elif selected_target_identifier is None or receipt_target_identifier is None:
+        canyon = _unavailable_canyon_evidence(
+            road_evidence,
+            "canyon_target_identifier_missing",
+            target_building=target or None,
+        )
+    elif not selection_ids_match:
         canyon = _unavailable_canyon_evidence(
             road_evidence,
             "canyon_selection_mismatch",
+            target_building=target or None,
+        )
+    elif receipt_target_identifier != selected_target_identifier:
+        canyon = _unavailable_canyon_evidence(
+            road_evidence,
+            "canyon_target_identifier_mismatch",
             target_building=target or None,
         )
     else:
@@ -2569,11 +2671,17 @@ async def get_canyon_width_api(
         expected = f"Bearer {OFFICIAL_GIS_BRIDGE_INBOUND_TOKEN}"
         if not authorization or not secrets.compare_digest(authorization, expected):
             raise HTTPException(status_code=401, detail="official GIS bridge authorization required")
+    building_selection = None
+    if selection_id is not None:
+        selection_context = await _lookup_building_selection(lat, lon, selection_id)
+        candidate = selection_context.get("building_selection")
+        building_selection = candidate if isinstance(candidate, dict) else None
     evidence = await fetch_canyon_width_evidence(
         lat,
         lon,
         road_name=road_name,
         selection_id=selection_id,
+        target_identifier=_canyon_target_identifier(building_selection),
     )
     return _attach_api_contract(evidence, selection_id)
 
@@ -2800,6 +2908,7 @@ async def evaluate_flight(request: EvaluationRequest):
         request.latitude,
         request.longitude,
         selection_id=request.selection_id,
+        target_identifier=_canyon_target_identifier(building_selection),
     )
     if request.selection_id is not None:
         raw_canyon_evidence = _bind_canyon_evidence_to_selection(

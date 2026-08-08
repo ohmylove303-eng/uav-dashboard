@@ -7,6 +7,40 @@ function asPoints(rawPoints) {
     .filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y));
 }
 
+function comparePointSequences(first, second) {
+  for (let index = 0; index < first.length; index += 1) {
+    const [firstX, firstY] = first[index];
+    const [secondX, secondY] = second[index];
+    if (firstX !== secondX) return firstX < secondX ? -1 : 1;
+    if (firstY !== secondY) return firstY < secondY ? -1 : 1;
+  }
+  return first.length - second.length;
+}
+
+function normalizedRingKey(points) {
+  const ring = points.map(([x, y]) => [x, y]);
+  if (ring.length > 1 && ring[0][0] === ring.at(-1)[0] && ring[0][1] === ring.at(-1)[1]) ring.pop();
+  if (ring.length === 0) return [];
+  const rotations = [];
+  for (const oriented of [ring, [...ring].reverse()]) {
+    for (let index = 0; index < oriented.length; index += 1) {
+      rotations.push([...oriented.slice(index), ...oriented.slice(0, index)]);
+    }
+  }
+  return rotations.reduce((current, candidate) => comparePointSequences(candidate, current) < 0 ? candidate : current);
+}
+
+function officialBuildingTieBreakKey(building, points) {
+  const stableId = String(building.stableId ?? building.id ?? "").trim();
+  return stableId ? [stableId, normalizedRingKey(points)] : null;
+}
+
+function compareFacadeCandidates(first, second) {
+  if (first.gap !== second.gap) return first.gap < second.gap ? -1 : 1;
+  if (first.stableId !== second.stableId) return first.stableId < second.stableId ? -1 : 1;
+  return comparePointSequences(first.normalizedGeometry, second.normalizedGeometry);
+}
+
 function segments(points) {
   return points.slice(1).map((point, index) => [points[index], point]);
 }
@@ -127,15 +161,22 @@ export function measureFacadeGap({ targetRing, roadPath, buildings }) {
   const matches = buildings.flatMap((building) => {
     const candidatePoints = asPoints(building.ring ?? []);
     if (candidatePoints.length < 4) return [];
+    const tieBreakKey = officialBuildingTieBreakKey(building, candidatePoints);
+    if (tieBreakKey === null) return [];
     const candidateSide = cross(...targetRoadSegment, centroid(candidatePoints));
     if (candidateSide === 0 || (candidateSide > 0) === (targetSide > 0)) return [];
     const [gap, targetPoint, opposingPoint] = closestRings(targetPoints, candidatePoints);
     const [verified, normalAlignment] = roadCrossingIsNormal(targetPoint, opposingPoint, roadSegments);
-    return verified && normalAlignment !== null ? [[gap, targetPoint, opposingPoint, building, normalAlignment]] : [];
+    const [stableId, normalizedGeometry] = tieBreakKey;
+    return verified && normalAlignment !== null ? [{ gap, stableId, normalizedGeometry, targetPoint, opposingPoint, building, normalAlignment }] : [];
   });
   if (matches.length === 0) return unavailable("opposing_official_building_not_matched");
 
-  const [gap, targetPoint, opposingPoint, opposingBuilding, normalAlignment] = matches.reduce((current, candidate) => candidate[0] < current[0] ? candidate : current);
+  // Equal facade gaps are ordered by official stable identifier and normalized
+  // geometry, so WFS feature order cannot change authoritative evidence.
+  const { gap, targetPoint, opposingPoint, building: opposingBuilding, normalAlignment } = matches.reduce(
+    (current, candidate) => compareFacadeCandidates(candidate, current) < 0 ? candidate : current,
+  );
   return {
     available: true,
     facadeGapM: Number(gap.toFixed(1)),

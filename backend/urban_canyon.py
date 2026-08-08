@@ -8,6 +8,7 @@ class BuildingGeometry(TypedDict, total=False):
     id: str
     name: str | None
     ring: list[list[float]]
+    stable_id: str
 
 
 class FacadeGapMeasurement(TypedDict):
@@ -34,6 +35,33 @@ def _points(raw_points: Sequence[Sequence[float]]) -> list[Point]:
         if isfinite(x) and isfinite(y):
             points.append((x, y))
     return points
+
+
+def _normalized_ring_key(points: Sequence[Point]) -> tuple[Point, ...]:
+    """Return a winding- and start-vertex-independent official geometry key."""
+    ring = tuple(points)
+    if len(ring) > 1 and ring[0] == ring[-1]:
+        ring = ring[:-1]
+    if not ring:
+        return ()
+    rotations = [ring[index:] + ring[:index] for index in range(len(ring))]
+    reversed_ring = tuple(reversed(ring))
+    rotations.extend(
+        reversed_ring[index:] + reversed_ring[:index]
+        for index in range(len(reversed_ring))
+    )
+    return min(rotations)
+
+
+def _official_building_tie_break_key(
+    building: BuildingGeometry,
+    points: Sequence[Point],
+) -> tuple[str, tuple[Point, ...]] | None:
+    """Use an official stable identifier, then normalized geometry, for equal gaps."""
+    stable_id = str(building.get("stable_id") or building.get("id") or "").strip()
+    if not stable_id:
+        return None
+    return (stable_id, _normalized_ring_key(points))
 
 
 def _segments(points: Sequence[Point]) -> list[tuple[Point, Point]]:
@@ -198,11 +226,16 @@ def measure_facade_gap(
             "reason": "target_building_road_side_ambiguous",
         }
 
-    measurements: list[tuple[float, Point, Point, BuildingGeometry, float]] = []
+    measurements: list[
+        tuple[float, str, tuple[Point, ...], Point, Point, BuildingGeometry, float]
+    ] = []
     for building in buildings:
         candidate_points = _points(building["ring"])
         candidate_segments = _segments(candidate_points)
         if len(candidate_points) < 4 or not candidate_segments:
+            continue
+        tie_break_key = _official_building_tie_break_key(building, candidate_points)
+        if tie_break_key is None:
             continue
         candidate_center = _centroid(candidate_points[:-1] if candidate_points[0] == candidate_points[-1] else candidate_points)
         candidate_side = _signed_road_side(candidate_center, target_road_segment)
@@ -212,7 +245,8 @@ def measure_facade_gap(
         crossing_verified, normal_alignment = _road_crossing_is_normal(target_point, opposing_point, road_segments)
         if not crossing_verified or normal_alignment is None:
             continue
-        measurements.append((gap_m, target_point, opposing_point, building, normal_alignment))
+        stable_id, normalized_geometry = tie_break_key
+        measurements.append((gap_m, stable_id, normalized_geometry, target_point, opposing_point, building, normal_alignment))
 
     if not measurements:
         return {
@@ -227,7 +261,12 @@ def measure_facade_gap(
             "reason": "opposing_official_building_not_matched",
         }
 
-    gap_m, target_point, opposing_point, opposing_building, normal_alignment = min(measurements, key=lambda result: result[0])
+    # Equal measured gaps are ordered by authoritative identifier and then by
+    # normalized official geometry, never by upstream WFS feature order.
+    gap_m, _, _, target_point, opposing_point, opposing_building, normal_alignment = min(
+        measurements,
+        key=lambda result: (result[0], result[1], result[2]),
+    )
     return {
         "available": True,
         "facade_gap_m": round(gap_m, 1),

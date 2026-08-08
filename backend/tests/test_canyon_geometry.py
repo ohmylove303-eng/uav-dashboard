@@ -45,6 +45,30 @@ class UrbanCanyonGeometryTests(unittest.TestCase):
         self.assertEqual(measurement["facade_gap_m"], None)
         self.assertEqual(measurement["reason"], "opposing_official_building_not_matched")
 
+    def test_equal_facade_gaps_choose_the_same_authoritative_building_when_feature_order_reverses(self):
+        target_ring = [[0.0, -42.0], [20.0, -42.0], [20.0, -12.0], [0.0, -12.0], [0.0, -42.0]]
+        road_path = [[-40.0, 0.0], [80.0, 0.0]]
+        alpha = {
+            "id": "official-building-alpha",
+            "name": "alpha",
+            "ring": [[2.0, 15.0], [22.0, 15.0], [22.0, 44.0], [2.0, 44.0], [2.0, 15.0]],
+        }
+        beta = {
+            "id": "official-building-beta",
+            "name": "beta",
+            "ring": [[2.0, 15.0], [24.0, 15.0], [24.0, 43.0], [2.0, 43.0], [2.0, 15.0]],
+        }
+
+        forward = measure_facade_gap(target_ring, road_path, [alpha, beta])
+        reversed_order = measure_facade_gap(target_ring, road_path, [beta, alpha])
+
+        self.assertTrue(forward["available"])
+        self.assertTrue(reversed_order["available"])
+        self.assertEqual(forward["opposing_building_id"], "official-building-alpha")
+        self.assertEqual(reversed_order["opposing_building_id"], "official-building-alpha")
+        self.assertEqual(forward["target_point"], reversed_order["target_point"])
+        self.assertEqual(forward["opposing_point"], reversed_order["opposing_point"])
+
 
 if __name__ == "__main__":
     unittest.main()

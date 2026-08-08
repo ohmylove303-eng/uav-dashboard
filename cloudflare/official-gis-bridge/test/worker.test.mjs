@@ -4,14 +4,14 @@ import test from "node:test";
 import { createWorker } from "../src/index.mjs";
 
 const selectionId = "9d88e3aa-17c7-4b75-b7a0-a6db69498ca4";
-const bridgeUrl = `https://bridge.example/api/canyon-width?lat=0&lon=-0.00006&selection_id=${selectionId}`;
+const bridgeUrl = `https://bridge.example/api/canyon-width?lat=0&lon=-0.00006&selection_id=${selectionId}&target_identifier_kind=native_feature_id&target_identifier_value=lt_c_spbd.7`;
 
 const buildingFeatures = {
   type: "FeatureCollection",
   features: [
     {
       type: "Feature",
-      id: "target-building",
+      id: "lt_c_spbd.7",
       properties: { buld_nm: "Target Building" },
       geometry: {
         type: "Polygon",
@@ -181,6 +181,29 @@ test("requires a valid selection UUID before querying official geometry", async 
   assert.equal(upstreamCalls, 0);
 });
 
+test("requires the Task-7 stable target identifier before querying official geometry", async () => {
+  let upstreamCalls = 0;
+  const worker = createWorker({
+    fetchImpl: async () => {
+      upstreamCalls += 1;
+      return new Response("unexpected", { status: 500 });
+    },
+  });
+  const response = await worker.fetch(
+    new Request(`https://bridge.example/api/canyon-width?lat=0&lon=-0.00006&selection_id=${selectionId}`, {
+      headers: { authorization: "Bearer server-only-token" },
+    }),
+    env,
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 400);
+  assert.equal(payload.available, false);
+  assert.equal(payload.reason, "invalid_target_identifier");
+  assert.equal(payload.facade_gap_m, null);
+  assert.equal(upstreamCalls, 0);
+});
+
 test("returns a verified facade gap instead of promoting official road right-of-way as a canyon width", async () => {
   const response = await makeWorker().fetch(
     new Request(bridgeUrl, {
@@ -199,6 +222,8 @@ test("returns a verified facade gap instead of promoting official road right-of-
   assert.equal(payload.official_road_right_of_way_width_m, 49.7);
   assert.equal(payload.receipt.road_crossing_verified, true);
   assert.equal(payload.receipt.selection_id, selectionId);
+  assert.equal(payload.target_building.native_feature_id, "lt_c_spbd.7");
+  assert.equal(payload.receipt.target_native_feature_id, "lt_c_spbd.7");
   assert.deepEqual(new Set(Object.values(payload.receipt.receipt_sources)), new Set(["official_gis_bridge_receipt"]));
   assert.deepEqual(Object.keys(payload.receipt.receipt_ids).sort(), [
     "facade_gap",
@@ -210,7 +235,7 @@ test("returns a verified facade gap instead of promoting official road right-of-
   for (const receiptId of Object.values(payload.receipt.receipt_ids)) {
     assert.match(receiptId, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   }
-  assert.equal(payload.target_building.id, "target-building");
+  assert.equal(payload.target_building.id, "lt_c_spbd.7");
   assert.equal(payload.opposing_building.id, "opposing-building");
 });
 

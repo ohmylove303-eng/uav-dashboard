@@ -98,6 +98,9 @@ def authoritative_weather() -> dict:
 def official_canyon(
     object_selection_id: Optional[str],
     receipt_selection_id: Optional[str],
+    *,
+    target_building_id: str = "target-7",
+    target_native_feature_id: Optional[str] = "lt_c_spbd.7",
 ) -> dict:
     receipt = {
         "kind": "official_canyon_width",
@@ -109,6 +112,11 @@ def official_canyon(
         "receipt_ids": dict(CANYON_RECEIPT_IDS),
         "receipt_sources": dict(CANYON_RECEIPT_SOURCES),
     }
+    target_building = {"id": target_building_id, "geometry_receipt": True}
+    if target_native_feature_id is not None:
+        target_building["native_feature_id"] = target_native_feature_id
+        receipt["native_feature_id"] = target_native_feature_id
+        receipt["target_native_feature_id"] = target_native_feature_id
     result = {
         "available": True,
         "official_available": True,
@@ -117,7 +125,7 @@ def official_canyon(
         "road_crossing_verified": True,
         "source": "direct_vworld_official_receipt",
         "source_chain": ["official_canyon_width", "direct_vworld_official_receipt"],
-        "target_building": {"id": "target-7", "geometry_receipt": True},
+        "target_building": target_building,
         "opposing_building": {"id": "opposing-7", "geometry_receipt": True},
         "receipt": receipt,
     }

@@ -73,3 +73,39 @@ test("rejects a nearer building when it is on the same side of the road", () => 
     reason: "opposing_official_building_not_matched",
   });
 });
+
+test("chooses the same authoritative opposing building when equal facade candidates reverse order", () => {
+  const alpha = {
+    id: "official-building-alpha",
+    name: "Alpha Building",
+    ring: [
+      [4, -4],
+      [8, -4],
+      [8, 4],
+      [4, 4],
+      [4, -4],
+    ],
+  };
+  const beta = {
+    ...alpha,
+    id: "official-building-beta",
+    name: "Beta Building",
+    ring: [
+      [4, -3],
+      [8, -3],
+      [8, 3],
+      [4, 3],
+      [4, -3],
+    ],
+  };
+
+  const forward = measureFacadeGap({ targetRing, roadPath, buildings: [alpha, beta] });
+  const reversed = measureFacadeGap({ targetRing, roadPath, buildings: [beta, alpha] });
+
+  assert.equal(forward.available, true);
+  assert.equal(reversed.available, true);
+  assert.equal(forward.opposingBuildingId, "official-building-alpha");
+  assert.equal(reversed.opposingBuildingId, "official-building-alpha");
+  assert.deepEqual(forward.targetPoint, reversed.targetPoint);
+  assert.deepEqual(forward.opposingPoint, reversed.opposingPoint);
+});

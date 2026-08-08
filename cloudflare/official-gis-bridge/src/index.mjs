@@ -7,6 +7,7 @@ const ROAD_LAYER = "lt_l_n3a0020000";
 const RECEIPT_SOURCE = "official_gis_bridge_receipt";
 const RECEIPT_PARTS = ["target_geometry", "opposing_geometry", "road_geometry", "road_crossing", "facade_gap"];
 const SELECTION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const TARGET_IDENTIFIER_KINDS = new Set(["native_feature_id", "bd_mgt_sn"]);
 
 function json(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
@@ -32,6 +33,19 @@ function validSelectionId(value) {
   return typeof value === "string" && SELECTION_ID_PATTERN.test(value);
 }
 
+function stableIdentifierValue(value) {
+  const identifier = String(value ?? "").trim();
+  return identifier && !/^vworld-building-\d+$/.test(identifier) && identifier !== "target-building" && identifier !== "official-building"
+    ? identifier
+    : null;
+}
+
+function requestedTargetIdentifier(url) {
+  const kind = url.searchParams.get("target_identifier_kind");
+  const value = stableIdentifierValue(url.searchParams.get("target_identifier_value"));
+  return TARGET_IDENTIFIER_KINDS.has(kind) && value ? { kind, value } : null;
+}
+
 async function deterministicReceiptId(value) {
   const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
   bytes[6] = (bytes[6] & 0x0f) | 0x50;
@@ -42,8 +56,14 @@ async function deterministicReceiptId(value) {
 
 async function canyonReceiptBundle(selectionId, target, opposing, road, measurement) {
   const receiptValues = {
-    target_geometry: target.ring,
-    opposing_geometry: opposing.ring,
+    target_geometry: {
+      identifier: target.targetIdentifier,
+      ring: target.ring,
+    },
+    opposing_geometry: {
+      id: opposing.id,
+      ring: opposing.ring,
+    },
     road_geometry: road.paths[0],
     road_crossing: {
       normal_alignment: measurement.normalAlignment,
@@ -100,19 +120,25 @@ function buildingName(properties = {}) {
   return null;
 }
 
-function buildingId(feature, index) {
+function buildingId(feature) {
   const properties = feature.properties ?? {};
   for (const key of ["bd_mgt_sn", "bld_mgt_sn", "pk", "id", "fid"]) {
-    if (properties[key] !== undefined && String(properties[key]).trim()) return String(properties[key]);
+    const identifier = stableIdentifierValue(properties[key]);
+    if (identifier) return identifier;
   }
-  return String(feature.id ?? `vworld-building-${index}`);
+  return stableIdentifierValue(feature.id);
 }
 
 function extractBuildings(payload) {
   return (payload?.features ?? []).flatMap((feature, index) => {
     const ring = ringFromGeometry(feature.geometry);
-    return Array.isArray(ring) && ring.length >= 4 ? [{
-      id: buildingId(feature, index),
+    const nativeFeatureId = buildingId(feature);
+    const bdMgtSn = stableIdentifierValue(feature.properties?.bd_mgt_sn);
+    return Array.isArray(ring) && ring.length >= 4 && nativeFeatureId ? [{
+      id: nativeFeatureId,
+      stableId: nativeFeatureId,
+      nativeFeatureId,
+      bdMgtSn,
       name: buildingName(feature.properties),
       ring,
     }] : [];
@@ -298,7 +324,7 @@ async function fetchOfficialWfsJson(fetchImpl, requests, referer, source) {
   throw failure;
 }
 
-async function canyonEvidence(lat, lon, roadNameValue, selectionId, env, fetchImpl) {
+async function canyonEvidence(lat, lon, roadNameValue, selectionId, targetIdentifier, env, fetchImpl) {
   if (!env.VWORLD_DATA_API_KEY || !env.VWORLD_REFERER) return unavailable("missing_vworld_data_api_key", null, null, [], selectionId);
   let buildingResult;
   let roadResult;
@@ -315,8 +341,19 @@ async function canyonEvidence(lat, lon, roadNameValue, selectionId, env, fetchIm
   const clickPoint = lonLatToMercator(lon, lat);
   const targetMatches = buildings.filter((building) => pointInRing(clickPoint[0], clickPoint[1], building.ring));
   const target = targetMatches.length === 1 ? targetMatches[0] : null;
-  const targetReceipt = target ? { id: target.id, name: target.name, geometry_receipt: true, selection_match: true } : null;
+  const targetReceipt = target ? {
+    id: target.id,
+    name: target.name,
+    geometry_receipt: true,
+    selection_match: true,
+    native_feature_id: target.nativeFeatureId,
+    bd_mgt_sn: target.bdMgtSn,
+  } : null;
   if (!target) return unavailable("target_official_building_not_selected", null, { id: "target-building", name: null, geometry_receipt: false, selection_match: false }, [], selectionId);
+  const targetIdentifierValue = targetIdentifier.kind === "native_feature_id" ? target.nativeFeatureId : target.bdMgtSn;
+  if (!targetIdentifierValue) return unavailable("canyon_target_identifier_missing", null, targetReceipt, [], selectionId);
+  if (targetIdentifierValue !== targetIdentifier.value) return unavailable("canyon_target_identifier_mismatch", null, targetReceipt, [], selectionId);
+  target.targetIdentifier = targetIdentifier;
   const road = selectRoad(roadPayload, lat, lon, roadNameValue);
   if (!road) return unavailable("official_road_geometry_not_matched", null, targetReceipt, [], selectionId);
   const measurement = measureFacadeGap({ targetRing: target.ring, roadPath: road.paths[0], buildings: buildings.filter((building) => building.id !== target.id) });
@@ -345,6 +382,7 @@ async function canyonEvidence(lat, lon, roadNameValue, selectionId, env, fetchIm
     receipt: {
       kind: "official_canyon_width",
       selection_id: selectionId,
+      [`target_${targetIdentifier.kind}`]: targetIdentifier.value,
       target_geometry_receipt: true,
       opposing_geometry_receipt: true,
       road_geometry_receipt: true,
@@ -380,7 +418,9 @@ export function createWorker({ fetchImpl = fetch } = {}) {
       if (lat === null || lon === null) return json({ error: "valid_lat_and_lon_are_required" }, 400);
       const selectionId = requestedSelectionId;
       if (!validSelectionId(selectionId)) return json(unavailable("invalid_selection_id"), 400);
-      return json(await canyonEvidence(lat, lon, url.searchParams.get("road_name"), selectionId, env, fetchImpl));
+      const targetIdentifier = requestedTargetIdentifier(url);
+      if (!targetIdentifier) return json(unavailable("invalid_target_identifier", null, null, [], selectionId), 400);
+      return json(await canyonEvidence(lat, lon, url.searchParams.get("road_name"), selectionId, targetIdentifier, env, fetchImpl));
     },
   };
 }

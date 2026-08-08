@@ -225,6 +225,7 @@ class BuildingSelectionContractTests(unittest.TestCase):
             "building_selection": {
                 "selection_id": SELECTION_ID,
                 "status": "official_verified",
+                "native_feature_id": "lt_c_spbd.7",
                 "official_footprint_receipt": {
                     "kind": "vworld_building_footprint", "point_inside": True,
                 },
@@ -257,10 +258,15 @@ class BuildingSelectionContractTests(unittest.TestCase):
             "selection_id": SELECTION_ID, "source": "direct_vworld_official_receipt",
             "road_crossing_verified": True,
             "source_chain": ["official_canyon_width", "direct_vworld_official_receipt"],
-            "target_building": {"id": "target-7", "geometry_receipt": True},
+            "target_building": {
+                "id": "target-7",
+                "geometry_receipt": True,
+                "native_feature_id": "lt_c_spbd.7",
+            },
             "opposing_building": {"id": "opposing-7", "geometry_receipt": True},
             "receipt": {
                 "kind": "official_canyon_width", "selection_id": SELECTION_ID,
+                "target_native_feature_id": "lt_c_spbd.7",
                 "target_geometry_receipt": True,
                 "opposing_geometry_receipt": True,
                 "road_geometry_receipt": True,
