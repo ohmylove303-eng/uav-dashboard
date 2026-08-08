@@ -177,6 +177,20 @@ DRONE_SPECS = {
 }
 
 KMA_API_KEY = os.getenv("KMA_API_KEY")
+KMA_SURFACE_STATIONS = [
+    {"id": 102, "name": "백령도", "lat": 37.967, "lon": 124.630},
+    {"id": 105, "name": "강릉", "lat": 37.751, "lon": 128.891},
+    {"id": 108, "name": "서울", "lat": 37.571, "lon": 126.966},
+    {"id": 112, "name": "인천", "lat": 37.477, "lon": 126.624},
+    {"id": 119, "name": "수원", "lat": 37.272, "lon": 127.004},
+    {"id": 131, "name": "청주", "lat": 36.639, "lon": 127.441},
+    {"id": 133, "name": "대전", "lat": 36.372, "lon": 127.372},
+    {"id": 143, "name": "대구", "lat": 35.878, "lon": 128.653},
+    {"id": 156, "name": "광주", "lat": 35.173, "lon": 126.892},
+    {"id": 159, "name": "부산", "lat": 35.105, "lon": 129.033},
+    {"id": 165, "name": "목포", "lat": 34.817, "lon": 126.381},
+    {"id": 184, "name": "제주", "lat": 33.514, "lon": 126.529},
+]
 KMA_DEFAULT_STATIONS = [
     {"id": 47102, "name": "백령도", "lat": 37.967, "lon": 124.630},
     {"id": 47122, "name": "오산", "lat": 37.090, "lon": 127.029},
@@ -199,9 +213,14 @@ WIND_PROFILER_CACHE: Dict[str, Dict[str, Any]] = {}
 WEATHER_LAST_GOOD_CACHE: Dict[str, Dict[str, Any]] = {}
 UPPER_AIR_LAST_GOOD_CACHE: Dict[str, Dict[str, Any]] = {}
 WIND_PROFILER_LAST_GOOD_CACHE: Dict[str, Dict[str, Any]] = {}
+KMA_SURFACE_REQUEST_TIMEOUT_S = float(os.getenv("KMA_SURFACE_REQUEST_TIMEOUT_S", "2.0"))
+OPEN_METEO_DISPLAY_REQUEST_TIMEOUT_S = float(os.getenv("OPEN_METEO_DISPLAY_REQUEST_TIMEOUT_S", "2.0"))
 KMA_UPPER_AIR_REQUEST_TIMEOUT_S = float(os.getenv("KMA_UPPER_AIR_REQUEST_TIMEOUT_S", "3.5"))
 KMA_WIND_PROFILER_REQUEST_TIMEOUT_S = float(os.getenv("KMA_WIND_PROFILER_REQUEST_TIMEOUT_S", "2.5"))
-SURFACE_WEATHER_REQUEST_TIMEOUT_S = float(os.getenv("SURFACE_WEATHER_REQUEST_TIMEOUT_S", "3.0"))
+SURFACE_WEATHER_REQUEST_TIMEOUT_S = max(
+    float(os.getenv("SURFACE_WEATHER_REQUEST_TIMEOUT_S", "0") or 0.0),
+    KMA_SURFACE_REQUEST_TIMEOUT_S + OPEN_METEO_DISPLAY_REQUEST_TIMEOUT_S + 0.5,
+)
 KP_REQUEST_TIMEOUT_S = float(os.getenv("KP_REQUEST_TIMEOUT_S", "2.0"))
 VWORLD_WFS_API_ENDPOINTS = (
     {"url": "https://api.vworld.kr/req/wfs", "mode": "api"},
@@ -242,6 +261,12 @@ UNVERIFIED_BUILDING_SOURCE_HINTS = (
     "client",
     "browser",
 )
+SURFACE_WEATHER_REASON_TIMEOUT = "surface_weather_timeout"
+SURFACE_WEATHER_REASON_HTTP = "surface_weather_http_error"
+SURFACE_WEATHER_REASON_PARSE = "surface_weather_parse_error"
+SURFACE_WEATHER_REASON_UNCONFIGURED = "surface_weather_unconfigured"
+SURFACE_WEATHER_RECEIPT_TTL = timedelta(hours=1)
+KST = timezone(timedelta(hours=9))
 
 class GateResult(BaseModel):
     gate: str
@@ -700,6 +725,132 @@ def _make_fresh_weather_cache_payload(payload: Dict[str, Any]) -> Dict[str, Any]
         receipt["stale_cache"] = False
         cached["receipt"] = receipt
     return cached
+
+
+class SurfaceWeatherFetchError(Exception):
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _surface_weather_values(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "wind_speed": round(float(payload.get("wind_speed", 0.0)), 3),
+        "gust_speed": round(float(payload.get("gust_speed", 0.0)), 3),
+        "visibility": round(float(payload.get("visibility", 0.0)), 3),
+        "precipitation_prob": int(round(float(payload.get("precipitation_prob", 0.0)))),
+        "weather_code": int(round(float(payload.get("weather_code", 0.0)))),
+    }
+
+
+def _parse_surface_weather_datetime(value: Any) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        digits = "".join(char for char in text if char.isdigit())
+        if len(digits) != 12:
+            return None
+        try:
+            parsed = datetime.strptime(digits, "%Y%m%d%H%M")
+        except ValueError:
+            return None
+        parsed = parsed.replace(tzinfo=KST)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=KST)
+    return parsed.astimezone(timezone.utc)
+
+
+def _build_surface_weather_receipt(
+    payload: Dict[str, Any],
+    *,
+    latitude: float,
+    longitude: float,
+    selection_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    observed_at = _parse_surface_weather_datetime(payload.get("observed_at_utc"))
+    expires_at = _parse_surface_weather_datetime(payload.get("expires_at_utc"))
+    authority_source = str(payload.get("authority_source") or payload.get("source") or "").strip()
+    source_chain = _normalize_source_chain(payload.get("source_chain") or [], authority_source)
+    if observed_at is None or expires_at is None or not authority_source or not source_chain:
+        return None
+    receipt = {
+        "kind": "kma_weather_observation",
+        "authority_source": authority_source,
+        "source": authority_source,
+        "source_chain": source_chain,
+        "stale_cache": False,
+        "observed_at_utc": observed_at.isoformat(),
+        "expires_at_utc": expires_at.isoformat(),
+        "latitude": latitude,
+        "longitude": longitude,
+        "values": _surface_weather_values(payload),
+    }
+    if selection_id is not None:
+        receipt["selection_id"] = selection_id
+    if payload.get("station_id") is not None:
+        receipt["station_id"] = payload.get("station_id")
+    if payload.get("station_name") is not None:
+        receipt["station_name"] = payload.get("station_name")
+    receipt["receipt_id"] = str(
+        uuid5(
+            NAMESPACE_URL,
+            "uav-weather:"
+            + json.dumps(receipt, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+        )
+    )
+    return receipt
+
+
+def _bind_surface_weather_to_request(
+    payload: Dict[str, Any],
+    *,
+    latitude: float,
+    longitude: float,
+    selection_id: Optional[str],
+) -> Dict[str, Any]:
+    bound = dict(payload)
+    receipt = _build_surface_weather_receipt(
+        bound,
+        latitude=latitude,
+        longitude=longitude,
+        selection_id=selection_id,
+    )
+    if receipt is not None:
+        bound["receipt"] = receipt
+    return bound
+
+
+def _fresh_authoritative_weather_cache(
+    *,
+    cache_key: str,
+    latitude: float,
+    longitude: float,
+    selection_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    cached = _cache_get(WEATHER_CACHE, cache_key, WEATHER_CACHE_TTL_S)
+    if not cached:
+        return None
+    source_chain = _normalize_source_chain(cached.get("source_chain") or [], cached.get("source"))
+    if not _weather_is_authoritative(source_chain, False):
+        return None
+    payload = _attach_weather_provenance(_make_fresh_weather_cache_payload(cached))
+    return _bind_surface_weather_to_request(
+        payload,
+        latitude=latitude,
+        longitude=longitude,
+        selection_id=selection_id,
+    )
+
+
+def _weather_source_text(payload: Dict[str, Any], suffixes: Optional[List[str]] = None) -> str:
+    source_chain = _normalize_source_chain(payload.get("source_chain") or [], payload.get("source"))
+    base = _chain_to_source(source_chain) or str(payload.get("source") or "weather_unavailable")
+    if suffixes:
+        return f"{base} + {', '.join(suffixes)}"
+    return base
 
 
 def _build_building_evidence(request: EvaluationRequest) -> Dict[str, Any]:
@@ -1991,28 +2142,58 @@ async def fetch_kp_index_safe() -> float:
         return 3.0
 
 
-async def fetch_weather_safe(lat: float, lon: float) -> Dict:
+async def fetch_weather_safe(lat: float, lon: float, selection_id: Optional[str] = None) -> Dict:
     cache_key = _cache_key_for_latlon(lat, lon)
     try:
         weather = _attach_weather_provenance(
             await asyncio.wait_for(fetch_weather(lat, lon), timeout=SURFACE_WEATHER_REQUEST_TIMEOUT_S)
         )
-        if weather.get("source") == "surface_fallback" or "surface_fallback" in weather.get("source_chain", []):
-            return _make_weather_unavailable("surface_weather_timeout", fallback=weather)
+    except asyncio.TimeoutError:
+        reason = SURFACE_WEATHER_REASON_TIMEOUT
+    except SurfaceWeatherFetchError as error:
+        reason = error.reason
+    except Exception:
+        reason = SURFACE_WEATHER_REASON_TIMEOUT
+    else:
         weather["available"] = bool(weather.get("available", True))
         weather["authoritative"] = _weather_is_authoritative(weather.get("source_chain", []), bool(weather.get("stale_cache")))
-        weather["authority_source"] = (
-            next((token for token in weather.get("source_chain", []) if token in AUTHORITATIVE_WEATHER_SOURCE_TOKENS), None)
-            if weather.get("authoritative")
-            else weather.get("authority_source")
+        if weather.get("authoritative"):
+            weather["authority_source"] = next(
+                (token for token in weather.get("source_chain", []) if token in AUTHORITATIVE_WEATHER_SOURCE_TOKENS),
+                None,
+            )
+            return _bind_surface_weather_to_request(
+                weather,
+                latitude=lat,
+                longitude=lon,
+                selection_id=selection_id,
+            )
+        weather["authority_source"] = None
+        cached = _fresh_authoritative_weather_cache(
+            cache_key=cache_key,
+            latitude=lat,
+            longitude=lon,
+            selection_id=selection_id,
         )
+        if cached and weather.get("reason") in {
+            SURFACE_WEATHER_REASON_TIMEOUT,
+            SURFACE_WEATHER_REASON_HTTP,
+            SURFACE_WEATHER_REASON_PARSE,
+            SURFACE_WEATHER_REASON_UNCONFIGURED,
+        }:
+            return cached
         return weather
-    except Exception:
-        cached = _cache_get(WEATHER_CACHE, cache_key, WEATHER_CACHE_TTL_S)
-        if cached and _weather_is_authoritative(_normalize_source_chain(cached.get("source_chain") or [], cached.get("source")), False):
-            return _attach_weather_provenance(_make_fresh_weather_cache_payload(cached))
-        stale = _cache_get_stale(WEATHER_LAST_GOOD_CACHE, cache_key, WEATHER_STALE_TTL_S)
-        return _attach_weather_provenance(_make_weather_unavailable("surface_weather_timeout", fallback=stale))
+
+    cached = _fresh_authoritative_weather_cache(
+        cache_key=cache_key,
+        latitude=lat,
+        longitude=lon,
+        selection_id=selection_id,
+    )
+    if cached:
+        return cached
+    stale = _cache_get_stale(WEATHER_LAST_GOOD_CACHE, cache_key, WEATHER_STALE_TTL_S)
+    return _attach_weather_provenance(_make_weather_unavailable(reason, fallback=stale))
 
 
 async def fetch_kma_upper_air_profile_safe(lat: float, lon: float) -> Optional[Dict]:
@@ -2072,81 +2253,228 @@ async def fetch_kp_index() -> float:
     return 3.0
 
 async def fetch_weather(lat: float, lon: float) -> Dict:
-    cache_key = f"{_round_coord(lat)},{_round_coord(lon)}"
+    cache_key = _cache_key_for_latlon(lat, lon)
     cached = _cache_get(WEATHER_CACHE, cache_key, WEATHER_CACHE_TTL_S)
     if cached:
         return _attach_weather_provenance(dict(cached))
 
-    url = "https://api.open-meteo.com/v1/forecast"
-    # UAV Forecast급 상세 데이터 요청
-    params = {
-        "latitude": lat, "longitude": lon,
-        "current": "temperature_2m,relative_humidity_2m,dew_point_2m,weather_code,cloud_cover,wind_speed_10m,wind_direction_10m,wind_gusts_10m,visibility,precipitation_probability",
-        "daily": "sunrise,sunset",
-        "timezone": "Asia/Seoul"
-    }
+    kma_error: Optional[SurfaceWeatherFetchError] = None
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            res = await client.get(url, params=params)
-            if res.status_code == 200:
-                data = res.json()
-                curr = data.get("current", {})
-                daily = data.get("daily", {})
-                
-                # 일출/일몰 시간 포맷팅 (06:38 형태)
-                sunrise = daily.get("sunrise", ["00:00"])[0].split("T")[-1][:5]
-                sunset = daily.get("sunset", ["00:00"])[0].split("T")[-1][:5]
+        surface_weather = await fetch_kma_surface_observation(lat, lon)
+    except SurfaceWeatherFetchError as error:
+        kma_error = error
+        surface_weather = None
 
-                result = {
-                    "wind_speed": curr.get("wind_speed_10m", 5) / 3.6, # m/s 변환
-                    "gust_speed": curr.get("wind_gusts_10m", 8) / 3.6,
-                    "wind_direction": curr.get("wind_direction_10m", 0),
-                    "visibility": curr.get("visibility", 10000) / 1000,
-                    "precipitation_prob": curr.get("precipitation_probability", 0),
-                    "weather_code": curr.get("weather_code", 0),
-                    "temperature": curr.get("temperature_2m", 20),
-                    "dew_point": curr.get("dew_point_2m", 15),
-                    "humidity": curr.get("relative_humidity_2m", 50),
-                    "cloud_cover": curr.get("cloud_cover", 0),
-                    "sunrise": sunrise,
-                    "sunset": sunset,
-                    "source": "open_meteo_surface",
-                    "source_chain": ["open_meteo_surface"],
-                    "profile_source": "surface_only",
-                    "stale_cache": False
-                }
-                _cache_set(WEATHER_LAST_GOOD_CACHE, cache_key, result)
-                return _attach_weather_provenance(_cache_set(WEATHER_CACHE, cache_key, result))
-    except Exception as e:
-        print(f"Weather Fetch Error: {e}")
-        stale = _cache_get_stale(WEATHER_LAST_GOOD_CACHE, cache_key, WEATHER_STALE_TTL_S)
-        if stale:
-            stale_result = dict(_mark_stale_payload(stale))
-            stale_result["source"] = f'{stale_result.get("source", "open_meteo_surface")} + stale_cache'
-            return _attach_weather_provenance(stale_result)
+    open_meteo = await fetch_open_meteo_surface_display(lat, lon)
+    if surface_weather is not None:
+        merged = dict(surface_weather)
+        if open_meteo is not None:
+            merged["sunrise"] = open_meteo.get("sunrise", merged.get("sunrise", "06:00"))
+            merged["sunset"] = open_meteo.get("sunset", merged.get("sunset", "18:00"))
+            merged["cloud_cover"] = open_meteo.get("cloud_cover", merged.get("cloud_cover", 0))
+        _cache_set(WEATHER_LAST_GOOD_CACHE, cache_key, merged)
+        return _attach_weather_provenance(_cache_set(WEATHER_CACHE, cache_key, merged))
 
-    stale = _cache_get_stale(WEATHER_LAST_GOOD_CACHE, cache_key, WEATHER_STALE_TTL_S)
-    if stale:
-        stale_result = dict(_mark_stale_payload(stale))
-        stale_result["source"] = f'{stale_result.get("source", "open_meteo_surface")} + stale_cache'
-        return _attach_weather_provenance(stale_result)
+    if open_meteo is not None:
+        open_meteo["reason"] = kma_error.reason if kma_error is not None else SURFACE_WEATHER_REASON_PARSE
+        return _attach_weather_provenance(open_meteo)
 
-    fallback = {
-        "wind_speed": 5.0, "gust_speed": 8.0, "wind_direction": 0,
-        "visibility": 10.0, "precipitation_prob": 10, "temperature": 20, 
-        "dew_point": 15, "humidity": 50, "cloud_cover": 20,
-        "weather_code": 0, "sunrise": "06:00", "sunset": "18:00",
-        "source": "surface_fallback",
-        "source_chain": ["surface_fallback"],
-        "profile_source": "surface_only",
-        "stale_cache": False
-    }
-    return _attach_weather_provenance(_cache_set(WEATHER_CACHE, cache_key, fallback))
+    if kma_error is not None:
+        raise kma_error
+    raise SurfaceWeatherFetchError(SURFACE_WEATHER_REASON_PARSE)
+
 
 def nearest_kma_station(lat: float, lon: float) -> Dict:
     def station_dist(station: Dict) -> float:
         return math.sqrt((station["lat"] - lat) ** 2 + (station["lon"] - lon) ** 2)
     return min(KMA_DEFAULT_STATIONS, key=station_dist)
+
+
+def nearest_kma_surface_station(lat: float, lon: float) -> Dict:
+    def station_dist(station: Dict) -> float:
+        return math.sqrt((station["lat"] - lat) ** 2 + (station["lon"] - lon) ** 2)
+    return min(KMA_SURFACE_STATIONS, key=station_dist)
+
+
+def latest_kma_surface_cycles(now_kst: Optional[datetime] = None, limit: int = 4) -> List[str]:
+    now_kst = now_kst or datetime.now(KST)
+    current_cycle = now_kst.replace(minute=0, second=0, microsecond=0)
+    cycles = []
+    cursor = current_cycle
+    while len(cycles) < limit:
+        cycles.append(cursor.strftime("%Y%m%d%H%M"))
+        cursor -= timedelta(hours=1)
+    return cycles
+
+
+def _parse_kma_surface_row(text: str) -> Optional[Dict[str, str]]:
+    header: Optional[List[str]] = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        cleaned = line.lstrip("#").strip()
+        if not cleaned:
+            continue
+        tokens = cleaned.split()
+        if "TM" in tokens and "STN" in tokens:
+            header = tokens
+            continue
+        if header is None or len(tokens) < len(header):
+            continue
+        values = tokens[: len(header) - 1] + [" ".join(tokens[len(header) - 1 :])]
+        return dict(zip(header, values))
+    return None
+
+
+def _surface_float(value: Any) -> Optional[float]:
+    return _parse_loose_number(value)
+
+
+def _surface_precipitating(row: Dict[str, str]) -> bool:
+    rain_amount = _surface_float(row.get("RN"))
+    if rain_amount is not None and rain_amount > 0:
+        return True
+    current_weather = str(row.get("WW") or "")
+    return any(token in current_weather for token in ("비", "눈", "소나기", "진눈깨비", "우박"))
+
+
+def _surface_visibility_km(row: Dict[str, str]) -> float:
+    visibility = _surface_float(row.get("VS"))
+    if visibility is None:
+        return 10.0
+    if visibility > 60:
+        return round(visibility / 100.0, 3)
+    return round(visibility, 3)
+
+
+def _surface_wind_direction_deg(row: Dict[str, str]) -> float:
+    wind_direction = _surface_float(row.get("WD"))
+    if wind_direction is None:
+        return 0.0
+    if 0.0 <= wind_direction <= 36.0:
+        return round(wind_direction * 10.0, 1)
+    return round(wind_direction, 1)
+
+
+async def fetch_open_meteo_surface_display(lat: float, lon: float) -> Optional[Dict[str, Any]]:
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "current": "temperature_2m,relative_humidity_2m,dew_point_2m,weather_code,cloud_cover,wind_speed_10m,wind_direction_10m,wind_gusts_10m,visibility,precipitation_probability",
+        "daily": "sunrise,sunset",
+        "timezone": "Asia/Seoul",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=OPEN_METEO_DISPLAY_REQUEST_TIMEOUT_S) as client:
+            response = await client.get(url, params=params)
+    except Exception:
+        return None
+    if response.status_code != 200:
+        return None
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    current = payload.get("current", {})
+    daily = payload.get("daily", {})
+    sunrise = str(daily.get("sunrise", ["00:00"])[0]).split("T")[-1][:5]
+    sunset = str(daily.get("sunset", ["00:00"])[0]).split("T")[-1][:5]
+    return {
+        "wind_speed": current.get("wind_speed_10m", 5) / 3.6,
+        "gust_speed": current.get("wind_gusts_10m", 8) / 3.6,
+        "wind_direction": current.get("wind_direction_10m", 0),
+        "visibility": current.get("visibility", 10000) / 1000,
+        "precipitation_prob": current.get("precipitation_probability", 0),
+        "weather_code": current.get("weather_code", 0),
+        "temperature": current.get("temperature_2m", 20),
+        "dew_point": current.get("dew_point_2m", 15),
+        "humidity": current.get("relative_humidity_2m", 50),
+        "cloud_cover": current.get("cloud_cover", 0),
+        "sunrise": sunrise,
+        "sunset": sunset,
+        "source": "open_meteo_surface",
+        "source_chain": ["open_meteo_surface"],
+        "profile_source": "surface_only",
+        "stale_cache": False,
+        "available": True,
+        "authoritative": False,
+        "authority_source": None,
+    }
+
+
+async def fetch_kma_surface_observation(lat: float, lon: float) -> Dict[str, Any]:
+    if not KMA_API_KEY:
+        raise SurfaceWeatherFetchError(SURFACE_WEATHER_REASON_UNCONFIGURED)
+
+    station = nearest_kma_surface_station(lat, lon)
+    last_http_status: Optional[int] = None
+    for cycle in latest_kma_surface_cycles():
+        try:
+            async with httpx.AsyncClient(timeout=KMA_SURFACE_REQUEST_TIMEOUT_S) as client:
+                response = await client.get(
+                    "https://apihub.kma.go.kr/api/typ01/url/kma_sfctm2.php",
+                    params={
+                        "tm": cycle,
+                        "stn": station["id"],
+                        "help": 1,
+                        "authKey": KMA_API_KEY,
+                    },
+                )
+        except httpx.TimeoutException as error:
+            raise SurfaceWeatherFetchError(SURFACE_WEATHER_REASON_TIMEOUT) from error
+        except Exception as error:
+            raise SurfaceWeatherFetchError(SURFACE_WEATHER_REASON_HTTP) from error
+        if response.status_code != 200:
+            last_http_status = response.status_code
+            continue
+        row = _parse_kma_surface_row(response.text)
+        if row is None:
+            continue
+        observed_at_utc = _parse_surface_weather_datetime(row.get("TM"))
+        if observed_at_utc is None:
+            continue
+        precipitation = _surface_precipitating(row)
+        wind_speed = _surface_float(row.get("WS")) or 0.0
+        gust_speed = _surface_float(row.get("GST_WS"))
+        sea_level_pressure = _surface_float(row.get("PS"))
+        local_pressure = _surface_float(row.get("PA"))
+        result = {
+            "wind_speed": round(wind_speed, 3),
+            "gust_speed": round(gust_speed if gust_speed is not None else wind_speed, 3),
+            "wind_direction": _surface_wind_direction_deg(row),
+            "visibility": _surface_visibility_km(row),
+            "precipitation_prob": 100 if precipitation else 0,
+            "weather_code": 61 if precipitation else 0,
+            "temperature": _surface_float(row.get("TA")) or 20.0,
+            "dew_point": _surface_float(row.get("TD")) or 15.0,
+            "humidity": int(round(_surface_float(row.get("HM")) or 50.0)),
+            "cloud_cover": int(round((_surface_float(row.get("CA_TOT")) or 0.0) * 10.0)),
+            "pressure_hpa": sea_level_pressure if sea_level_pressure is not None else (local_pressure or 1013.25),
+            "sunrise": "06:00",
+            "sunset": "18:00",
+            "source": "kma_surface_observation",
+            "source_chain": ["kma_surface_observation"],
+            "profile_source": "surface_only",
+            "stale_cache": False,
+            "available": True,
+            "authoritative": True,
+            "authority_source": "kma_surface_observation",
+            "station_id": station["id"],
+            "station_name": station["name"],
+            "observed_at_utc": observed_at_utc.isoformat(),
+            "expires_at_utc": (observed_at_utc + SURFACE_WEATHER_RECEIPT_TTL).isoformat(),
+        }
+        return _bind_surface_weather_to_request(
+            result,
+            latitude=lat,
+            longitude=lon,
+            selection_id=None,
+        )
+    if last_http_status is not None:
+        raise SurfaceWeatherFetchError(SURFACE_WEATHER_REASON_HTTP)
+    raise SurfaceWeatherFetchError(SURFACE_WEATHER_REASON_PARSE)
 
 def latest_kma_cycles(now_utc: Optional[datetime] = None, limit: int = 4) -> List[str]:
     now_utc = now_utc or datetime.now(timezone.utc)
@@ -2708,7 +3036,7 @@ async def get_weather_api(
     lon: float = 126.9780,
     selection_id: Optional[SelectionId] = None,
 ):
-    w = await fetch_weather_safe(lat, lon)
+    w = await fetch_weather_safe(lat, lon, selection_id=selection_id)
     kp = await fetch_kp_index_safe()
     w["kp_index"] = kp
     upper_air, wind_profiler = await asyncio.gather(
@@ -2722,15 +3050,8 @@ async def get_weather_api(
         source_suffixes.append("stale_upper_air_cache")
     if wind_profiler and wind_profiler.get("stale_cache"):
         source_suffixes.append("stale_wind_profiler_cache")
-    if upper_air and wind_profiler:
-        w["source"] = "kma_radiosonde + kma_wind_profiler + open_meteo_surface"
-    elif upper_air:
-        w["source"] = "kma_radiosonde + open_meteo_surface"
-    elif wind_profiler:
-        w["source"] = "kma_wind_profiler + open_meteo_surface"
-    if source_suffixes:
-        w["source"] = f'{w.get("source", "open_meteo_surface")} + {", ".join(source_suffixes)}'
     w = _attach_weather_provenance(w, upper_air, wind_profiler)
+    w["source"] = _weather_source_text(w, source_suffixes)
     weather_evidence = _build_weather_evidence(
         w,
         context=WeatherEvidenceContext(
@@ -2848,7 +3169,11 @@ async def evaluate_flight(request: EvaluationRequest):
         }
         kp = request.kp_index or 3.0
     else:
-        weather = await fetch_weather_safe(request.latitude, request.longitude)
+        weather = await fetch_weather_safe(
+            request.latitude,
+            request.longitude,
+            selection_id=request.selection_id,
+        )
         kp = await fetch_kp_index_safe()
     
     weather["kp_index"] = kp
@@ -2874,7 +3199,6 @@ async def evaluate_flight(request: EvaluationRequest):
                 selected_layer["pressure_hpa"],
                 selected_layer["temperature_c"]
             )
-            weather["source"] = "kma_radiosonde + open_meteo_surface"
             if upper_air.get("stale_cache"):
                 source_suffixes.append("stale_upper_air_cache")
 
@@ -2903,17 +3227,11 @@ async def evaluate_flight(request: EvaluationRequest):
                     selected_layer["pressure_hpa"],
                     selected_layer["temperature_c"]
                 )
-            weather["source"] = (
-                "kma_radiosonde + kma_wind_profiler + open_meteo_surface"
-                if upper_air else
-                "kma_wind_profiler + open_meteo_surface"
-            )
             if wind_profiler.get("stale_cache"):
                 source_suffixes.append("stale_wind_profiler_cache")
 
-    if source_suffixes:
-        weather["source"] = f'{weather.get("source", "open_meteo_surface")} + {", ".join(source_suffixes)}'
     weather = _attach_weather_provenance(weather, upper_air, wind_profiler)
+    weather["source"] = _weather_source_text(weather, source_suffixes)
     profile_source = weather.get("profile_source", "surface_only")
 
     # 2. Drone Specs
