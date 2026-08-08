@@ -5,6 +5,8 @@ import { createWorker } from "../src/index.mjs";
 
 const selectionId = "9d88e3aa-17c7-4b75-b7a0-a6db69498ca4";
 const bridgeUrl = `https://bridge.example/api/canyon-width?lat=0&lon=-0.00006&selection_id=${selectionId}&target_identifier_kind=native_feature_id&target_identifier_value=lt_c_spbd.7`;
+const buildingManagementNumber = "1114010300100310000019224";
+const buildingManagementBridgeUrl = `https://bridge.example/api/canyon-width?lat=0&lon=-0.00006&selection_id=${selectionId}&target_identifier_kind=bd_mgt_sn&target_identifier_value=${buildingManagementNumber}`;
 
 const buildingFeatures = {
   type: "FeatureCollection",
@@ -12,7 +14,7 @@ const buildingFeatures = {
     {
       type: "Feature",
       id: "lt_c_spbd.7",
-      properties: { buld_nm: "Target Building" },
+      properties: { bd_mgt_sn: buildingManagementNumber, buld_nm: "Target Building" },
       geometry: {
         type: "Polygon",
         coordinates: [[[-8, -4], [-4, -4], [-4, 4], [-8, 4], [-8, -4]]],
@@ -41,10 +43,10 @@ const roadFeatures = {
   ],
 };
 
-function makeWorker() {
+function makeWorker(buildings = buildingFeatures) {
   return createWorker({
     fetchImpl: async (url) => new Response(
-      String(url).includes("TYPENAME=lt_l_n3a0020000") ? JSON.stringify(roadFeatures) : JSON.stringify(buildingFeatures),
+      String(url).includes("TYPENAME=lt_l_n3a0020000") ? JSON.stringify(roadFeatures) : JSON.stringify(buildings),
       { status: 200, headers: { "content-type": "application/json" } },
     ),
   });
@@ -223,7 +225,9 @@ test("returns a verified facade gap instead of promoting official road right-of-
   assert.equal(payload.receipt.road_crossing_verified, true);
   assert.equal(payload.receipt.selection_id, selectionId);
   assert.equal(payload.target_building.native_feature_id, "lt_c_spbd.7");
+  assert.equal(payload.target_building.bd_mgt_sn, buildingManagementNumber);
   assert.equal(payload.receipt.target_native_feature_id, "lt_c_spbd.7");
+  assert.equal(payload.receipt.target_bd_mgt_sn, buildingManagementNumber);
   assert.deepEqual(new Set(Object.values(payload.receipt.receipt_sources)), new Set(["official_gis_bridge_receipt"]));
   assert.deepEqual(Object.keys(payload.receipt.receipt_ids).sort(), [
     "facade_gap",
@@ -237,6 +241,77 @@ test("returns a verified facade gap instead of promoting official road right-of-
   }
   assert.equal(payload.target_building.id, "lt_c_spbd.7");
   assert.equal(payload.opposing_building.id, "opposing-building");
+});
+
+test("accepts a Task-7 building management selection without relabeling the native feature ID", async () => {
+  const response = await makeWorker().fetch(
+    new Request(buildingManagementBridgeUrl, {
+      headers: { authorization: "Bearer server-only-token" },
+    }),
+    env,
+  );
+  const payload = await response.json();
+
+  assert.equal(payload.available, true);
+  assert.equal(payload.target_building.native_feature_id, "lt_c_spbd.7");
+  assert.equal(payload.target_building.bd_mgt_sn, buildingManagementNumber);
+  assert.equal(payload.receipt.target_native_feature_id, "lt_c_spbd.7");
+  assert.equal(payload.receipt.target_bd_mgt_sn, buildingManagementNumber);
+});
+
+test("rejects a native request that only equals the building management number", async () => {
+  const crossKindUrl = bridgeUrl.replace("target_identifier_value=lt_c_spbd.7", `target_identifier_value=${buildingManagementNumber}`);
+  const response = await makeWorker().fetch(
+    new Request(crossKindUrl, {
+      headers: { authorization: "Bearer server-only-token" },
+    }),
+    env,
+  );
+  const payload = await response.json();
+
+  assert.equal(payload.available, false);
+  assert.equal(payload.reason, "canyon_target_identifier_mismatch");
+  assert.equal(payload.facade_gap_m, null);
+  assert.equal(payload.selection_id, selectionId);
+});
+
+test("reports a missing native feature ID without falling back to the building management number", async () => {
+  const missingNative = structuredClone(buildingFeatures);
+  delete missingNative.features[0].id;
+  const response = await makeWorker(missingNative).fetch(
+    new Request(bridgeUrl, {
+      headers: { authorization: "Bearer server-only-token" },
+    }),
+    env,
+  );
+  const payload = await response.json();
+
+  assert.equal(payload.available, false);
+  assert.equal(payload.reason, "canyon_target_identifier_missing");
+  assert.equal(payload.facade_gap_m, null);
+  assert.equal(payload.selection_id, selectionId);
+});
+
+test("keeps dual-identifier canyon receipts stable when official feature order reverses", async () => {
+  const reversed = structuredClone(buildingFeatures);
+  reversed.features.reverse();
+  const forwardResponse = await makeWorker().fetch(
+    new Request(bridgeUrl, { headers: { authorization: "Bearer server-only-token" } }),
+    env,
+  );
+  const reversedResponse = await makeWorker(reversed).fetch(
+    new Request(bridgeUrl, { headers: { authorization: "Bearer server-only-token" } }),
+    env,
+  );
+  const forward = await forwardResponse.json();
+  const backward = await reversedResponse.json();
+
+  assert.equal(forward.available, true);
+  assert.equal(backward.available, true);
+  assert.equal(forward.target_building.native_feature_id, backward.target_building.native_feature_id);
+  assert.equal(forward.target_building.bd_mgt_sn, backward.target_building.bd_mgt_sn);
+  assert.equal(forward.opposing_building.id, backward.opposing_building.id);
+  assert.deepEqual(forward.receipt.receipt_ids, backward.receipt.receipt_ids);
 });
 
 test("identifies the official upstream that is unavailable without fabricating canyon evidence", async () => {

@@ -20,6 +20,57 @@ def _lonlat_ring(points):
     return [list(main._mercator_to_lonlat(x, y)) for x, y in points]
 
 
+def _verified_bridge_receipt(selection_id, native_feature_id, bd_mgt_sn):
+    target = {
+        "id": native_feature_id or bd_mgt_sn,
+        "geometry_receipt": True,
+        "native_feature_id": native_feature_id,
+        "bd_mgt_sn": bd_mgt_sn,
+    }
+    receipt = {
+        "kind": "official_canyon_width",
+        "selection_id": selection_id,
+        "target_geometry_receipt": True,
+        "opposing_geometry_receipt": True,
+        "road_geometry_receipt": True,
+        "road_crossing_verified": True,
+        "receipt_ids": {
+            "target_geometry": "d09405f8-c168-5ba7-b928-5102ed0a0d44",
+            "opposing_geometry": "ec3eff5c-dda4-55b5-b659-865865b8c3b6",
+            "road_geometry": "1c342204-fb71-5448-ad27-e7298cf93647",
+            "road_crossing": "8bf5b12e-436a-5889-a72f-4ff6d950f98c",
+            "facade_gap": "4cce213b-98ba-5118-ad95-8e52c084c72b",
+        },
+        "receipt_sources": {
+            part: "official_gis_bridge_receipt"
+            for part in (
+                "target_geometry",
+                "opposing_geometry",
+                "road_geometry",
+                "road_crossing",
+                "facade_gap",
+            )
+        },
+    }
+    if native_feature_id:
+        receipt["target_native_feature_id"] = native_feature_id
+    if bd_mgt_sn:
+        receipt["target_bd_mgt_sn"] = bd_mgt_sn
+    return {
+        "available": True,
+        "official_available": True,
+        "facade_gap_m": 27.0,
+        "effective_canyon_width_m": 27.0,
+        "source": "official_gis_bridge_receipt",
+        "source_chain": ["vworld_wfs", "official_building_collection", "official_canyon_width", "official_gis_bridge_receipt"],
+        "selection_id": selection_id,
+        "road_crossing_verified": True,
+        "target_building": target,
+        "opposing_building": {"id": "opposite-side", "geometry_receipt": True},
+        "receipt": receipt,
+    }
+
+
 class _BridgeTransportFailureClient:
     def __init__(self, *args, **kwargs):
         pass
@@ -222,6 +273,125 @@ class CanyonWidthRouteTests(unittest.TestCase):
         self.assertEqual(payload["selection_id"], self.selection_id)
         self.assertEqual(payload["receipt"]["selection_id"], self.selection_id)
         self.assertEqual(payload["source"], "official_gis_bridge_receipt")
+
+    def test_route_accepts_a_native_feature_selection_when_the_bridge_receipt_carries_both_identifiers(self):
+        native_feature_id = "lt_c_spbd.7"
+        bd_mgt_sn = "1114010300100310000019224"
+        bridge_result = _verified_bridge_receipt(self.selection_id, native_feature_id, bd_mgt_sn)
+        with (
+            patch.object(
+                main,
+                "_lookup_building_selection",
+                AsyncMock(return_value={"building_selection": {
+                    "selection_id": self.selection_id,
+                    "status": "official_verified",
+                    "native_feature_id": native_feature_id,
+                }}),
+            ),
+            patch.object(main, "fetch_official_gis_bridge_canyon_evidence", AsyncMock(return_value=bridge_result)),
+            patch.object(main, "fetch_road_width_evidence", AsyncMock(side_effect=AssertionError("verified bridge result must avoid direct fallback"))),
+        ):
+            response = self.client.get("/api/canyon-width", params=self._params())
+
+        payload = response.json()
+        self.assertTrue(payload["official_available"])
+        self.assertEqual(payload["target_building"]["native_feature_id"], native_feature_id)
+        self.assertEqual(payload["target_building"]["bd_mgt_sn"], bd_mgt_sn)
+        self.assertEqual(payload["receipt"]["target_native_feature_id"], native_feature_id)
+        self.assertEqual(payload["receipt"]["target_bd_mgt_sn"], bd_mgt_sn)
+
+    def test_route_accepts_a_building_management_selection_when_the_bridge_receipt_also_has_a_native_id(self):
+        native_feature_id = "lt_c_spbd.7"
+        bd_mgt_sn = "1114010300100310000019224"
+        bridge_result = _verified_bridge_receipt(self.selection_id, native_feature_id, bd_mgt_sn)
+        with (
+            patch.object(
+                main,
+                "_lookup_building_selection",
+                AsyncMock(return_value={"building_selection": {
+                    "selection_id": self.selection_id,
+                    "status": "official_verified",
+                    "bd_mgt_sn": bd_mgt_sn,
+                }}),
+            ),
+            patch.object(main, "fetch_official_gis_bridge_canyon_evidence", AsyncMock(return_value=bridge_result)),
+            patch.object(main, "fetch_road_width_evidence", AsyncMock(side_effect=AssertionError("verified bridge result must avoid direct fallback"))),
+        ):
+            response = self.client.get("/api/canyon-width", params=self._params())
+
+        payload = response.json()
+        self.assertTrue(payload["official_available"])
+        self.assertEqual(payload["receipt"]["target_native_feature_id"], native_feature_id)
+        self.assertEqual(payload["receipt"]["target_bd_mgt_sn"], bd_mgt_sn)
+
+    def test_route_rejects_cross_kind_target_equality(self):
+        native_feature_id = "lt_c_spbd.7"
+        bd_mgt_sn = "1114010300100310000019224"
+        bridge_result = _verified_bridge_receipt(self.selection_id, native_feature_id, bd_mgt_sn)
+        with (
+            patch.object(
+                main,
+                "_lookup_building_selection",
+                AsyncMock(return_value={"building_selection": {
+                    "selection_id": self.selection_id,
+                    "status": "official_verified",
+                    "native_feature_id": bd_mgt_sn,
+                }}),
+            ),
+            patch.object(main, "fetch_official_gis_bridge_canyon_evidence", AsyncMock(return_value=bridge_result)),
+            patch.object(main, "fetch_road_width_evidence", AsyncMock(side_effect=AssertionError("cross-kind target must not use direct fallback"))),
+            patch.object(main, "lookup_official_building_collection", AsyncMock(side_effect=AssertionError("cross-kind target must not use direct fallback"))),
+        ):
+            response = self.client.get("/api/canyon-width", params=self._params())
+
+        payload = response.json()
+        self._assert_unavailable_receipt_bound_to_selection(payload)
+        self.assertEqual(payload["reason"], "canyon_target_identifier_mismatch")
+
+    def test_route_reports_missing_requested_identifier_kind_without_cross_kind_fallback(self):
+        native_feature_id = "lt_c_spbd.7"
+        bridge_result = _verified_bridge_receipt(self.selection_id, None, "1114010300100310000019224")
+        with (
+            patch.object(
+                main,
+                "_lookup_building_selection",
+                AsyncMock(return_value={"building_selection": {
+                    "selection_id": self.selection_id,
+                    "status": "official_verified",
+                    "native_feature_id": native_feature_id,
+                }}),
+            ),
+            patch.object(main, "fetch_official_gis_bridge_canyon_evidence", AsyncMock(return_value=bridge_result)),
+            patch.object(main, "fetch_road_width_evidence", AsyncMock(side_effect=AssertionError("missing native ID must not use direct fallback"))),
+            patch.object(main, "lookup_official_building_collection", AsyncMock(side_effect=AssertionError("missing native ID must not use direct fallback"))),
+        ):
+            response = self.client.get("/api/canyon-width", params=self._params())
+
+        payload = response.json()
+        self._assert_unavailable_receipt_bound_to_selection(payload)
+        self.assertEqual(payload["reason"], "canyon_target_identifier_missing")
+
+    def test_direct_fallback_preserves_both_target_identifier_kinds_in_the_receipt(self):
+        collection = {
+            "available": True,
+            "official_available": True,
+            "source_chain": ["vworld_wfs"],
+            "features": [
+                {"id": "target", "name": "대상건물", "ring": self.target_ring, "properties": {"bd_mgt_sn": "management-target"}},
+                {"id": "opposite-side", "name": "맞은편", "ring": self.opposing_ring},
+            ],
+        }
+        with (
+            patch.object(main, "fetch_official_gis_bridge_canyon_evidence", AsyncMock(return_value=None)),
+            patch.object(main, "fetch_road_width_evidence", AsyncMock(return_value=self.road)),
+            patch.object(main, "lookup_official_building_collection", AsyncMock(return_value=collection)),
+        ):
+            response = self.client.get("/api/canyon-width", params=self._params())
+
+        payload = response.json()
+        self.assertTrue(payload["official_available"])
+        self.assertEqual(payload["receipt"]["target_native_feature_id"], "target")
+        self.assertEqual(payload["receipt"]["target_bd_mgt_sn"], "management-target")
 
     def test_route_rejects_an_incomplete_bridge_receipt_without_direct_promotion(self):
         incomplete_bridge_result = {

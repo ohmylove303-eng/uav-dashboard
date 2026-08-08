@@ -57,7 +57,11 @@ async function deterministicReceiptId(value) {
 async function canyonReceiptBundle(selectionId, target, opposing, road, measurement) {
   const receiptValues = {
     target_geometry: {
-      identifier: target.targetIdentifier,
+      identifier: {
+        requested: target.targetIdentifier,
+        native_feature_id: target.nativeFeatureId,
+        bd_mgt_sn: target.bdMgtSn,
+      },
       ring: target.ring,
     },
     opposing_geometry: {
@@ -120,24 +124,35 @@ function buildingName(properties = {}) {
   return null;
 }
 
-function buildingId(feature) {
-  const properties = feature.properties ?? {};
-  for (const key of ["bd_mgt_sn", "bld_mgt_sn", "pk", "id", "fid"]) {
-    const identifier = stableIdentifierValue(properties[key]);
-    if (identifier) return identifier;
-  }
+function nativeFeatureId(feature) {
   return stableIdentifierValue(feature.id);
 }
 
+function buildingManagementNumber(feature) {
+  return stableIdentifierValue(feature.properties?.bd_mgt_sn);
+}
+
+function canyonReceiptTargetIdentifiers(target) {
+  const nativeId = stableIdentifierValue(target?.nativeFeatureId ?? target?.native_feature_id);
+  const bdMgtSn = stableIdentifierValue(target?.bdMgtSn ?? target?.bd_mgt_sn);
+  return {
+    ...(nativeId ? { target_native_feature_id: nativeId } : {}),
+    ...(bdMgtSn ? { target_bd_mgt_sn: bdMgtSn } : {}),
+  };
+}
+
 function extractBuildings(payload) {
-  return (payload?.features ?? []).flatMap((feature, index) => {
+  return (payload?.features ?? []).flatMap((feature) => {
     const ring = ringFromGeometry(feature.geometry);
-    const nativeFeatureId = buildingId(feature);
-    const bdMgtSn = stableIdentifierValue(feature.properties?.bd_mgt_sn);
-    return Array.isArray(ring) && ring.length >= 4 && nativeFeatureId ? [{
-      id: nativeFeatureId,
-      stableId: nativeFeatureId,
-      nativeFeatureId,
+    // Do not merge official identifier kinds. Task-7 native selection is the
+    // WFS feature ID; bd_mgt_sn is a separate official building identifier.
+    const nativeId = nativeFeatureId(feature);
+    const bdMgtSn = buildingManagementNumber(feature);
+    const stableId = nativeId ?? bdMgtSn;
+    return Array.isArray(ring) && ring.length >= 4 && stableId ? [{
+      id: stableId,
+      stableId,
+      nativeFeatureId: nativeId,
       bdMgtSn,
       name: buildingName(feature.properties),
       ring,
@@ -237,6 +252,7 @@ function unavailable(reason, road = null, target = null, upstreamAttempts = [], 
       road_geometry_receipt: Boolean(road),
       road_crossing_verified: false,
       source_chain: sourceChain,
+      ...canyonReceiptTargetIdentifiers(target),
     },
   };
   if (upstreamAttempts.length) payload.upstream_attempts = upstreamAttempts;
@@ -356,7 +372,7 @@ async function canyonEvidence(lat, lon, roadNameValue, selectionId, targetIdenti
   target.targetIdentifier = targetIdentifier;
   const road = selectRoad(roadPayload, lat, lon, roadNameValue);
   if (!road) return unavailable("official_road_geometry_not_matched", null, targetReceipt, [], selectionId);
-  const measurement = measureFacadeGap({ targetRing: target.ring, roadPath: road.paths[0], buildings: buildings.filter((building) => building.id !== target.id) });
+  const measurement = measureFacadeGap({ targetRing: target.ring, roadPath: road.paths[0], buildings: buildings.filter((building) => building !== target) });
   if (!measurement.available) return unavailable(measurement.reason, road, targetReceipt, [], selectionId);
   const sourceChain = ["vworld_wfs", buildingResult.sourceOrigin, roadResult.sourceOrigin, "official_building_collection", "official_road_right_of_way", ROAD_LAYER, "official_canyon_width", RECEIPT_SOURCE];
   const opposing = buildings.find((building) => building.id === measurement.opposingBuildingId);
@@ -382,7 +398,7 @@ async function canyonEvidence(lat, lon, roadNameValue, selectionId, targetIdenti
     receipt: {
       kind: "official_canyon_width",
       selection_id: selectionId,
-      [`target_${targetIdentifier.kind}`]: targetIdentifier.value,
+      ...canyonReceiptTargetIdentifiers(target),
       target_geometry_receipt: true,
       opposing_geometry_receipt: true,
       road_geometry_receipt: true,
