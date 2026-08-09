@@ -8,6 +8,7 @@ import {
     normalizeApiBaseUrl,
     saveApiBaseUrl
 } from './api'
+import { getStatusColor, getStatusEmoji, getStatusLabel, getWorstStatus } from './status'
 import './App.css'
 
 const TABS = [
@@ -25,12 +26,6 @@ const DRONE_SPECS = {
 
 const DRONE_MODELS = Object.keys(DRONE_SPECS)
 
-const STATUS_WEIGHT = {
-    GO: 0,
-    RESTRICT: 1,
-    'NO-GO': 2
-}
-
 function toNumber(value, fallback = 0) {
     const parsed = Number(value)
     return Number.isFinite(parsed) ? parsed : fallback
@@ -39,30 +34,6 @@ function toNumber(value, fallback = 0) {
 function formatNumber(value, digits = 1, fallback = '-') {
     const parsed = Number(value)
     return Number.isFinite(parsed) ? parsed.toFixed(digits) : fallback
-}
-
-function getStatusColor(status) {
-    switch (status) {
-        case 'GO': return '#22c55e'
-        case 'RESTRICT': return '#eab308'
-        case 'NO-GO': return '#ef4444'
-        default: return '#64748b'
-    }
-}
-
-function getStatusEmoji(status) {
-    switch (status) {
-        case 'GO': return '🟢'
-        case 'RESTRICT': return '🟡'
-        case 'NO-GO': return '🔴'
-        default: return '⚪'
-    }
-}
-
-function getWorstStatus(statuses) {
-    return statuses.reduce((worst, status) => (
-        STATUS_WEIGHT[status] > STATUS_WEIGHT[worst] ? status : worst
-    ), 'GO')
 }
 
 function normalizeSourceChain(sourceChain) {
@@ -826,7 +797,7 @@ function App() {
                                                     className="gate-status"
                                                     style={{ color: getStatusColor(gate.status) }}
                                                 >
-                                                    {gate.status}
+                                                    {getStatusLabel(gate.status)}
                                                 </div>
                                                 <div className="gate-reason">{gate.reason}</div>
                                             </div>
@@ -864,7 +835,7 @@ function App() {
                                             >
                                                 <div className="drone-type">{type}</div>
                                                 <div className="drone-status" style={{ color: getStatusColor(status) }}>
-                                                    {getStatusEmoji(status)} {status}
+                                                    {getStatusEmoji(status)} {getStatusLabel(status)}
                                                 </div>
                                             </div>
                                         ))}
@@ -907,7 +878,7 @@ function App() {
                                         className="judgment-result"
                                         style={{ color: getStatusColor(evaluation.final_judgment) }}
                                     >
-                                        {getStatusEmoji(evaluation.final_judgment)} {evaluation.final_judgment}
+                                        {getStatusEmoji(evaluation.final_judgment)} {getStatusLabel(evaluation.final_judgment)}
                                     </div>
                                 </div>
                             </>
