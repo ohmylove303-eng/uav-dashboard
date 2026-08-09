@@ -86,6 +86,17 @@ class OfficialGisReadinessTests(unittest.TestCase):
         self.assertNotIn("server-named-key", response.text)
         self.assertNotIn("server-data-key", response.text)
 
+    def test_health_reports_the_running_render_revision_without_secrets(self):
+        with patch.dict(
+            main.os.environ,
+            {"RENDER_GIT_COMMIT": "c6753982221de785b1f56d04a425e27fb27795ab"},
+            clear=False,
+        ):
+            response = self.client.get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["deployment_revision"], "c6753982221d")
+
 
 if __name__ == "__main__":
     unittest.main()

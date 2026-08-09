@@ -3061,10 +3061,16 @@ def estimate_route_building_height(lat: float, lon: float, with_metadata: bool =
 
 @app.get("/health")
 async def health_check():
+    deployment_revision = (
+        os.getenv("RENDER_GIT_COMMIT")
+        or os.getenv("GIT_COMMIT")
+        or "local"
+    )[:12]
     return {
         "status": "ok",
         "version": app.version,
-        "kma_configured": bool(KMA_API_KEY)
+        "kma_configured": bool(KMA_API_KEY),
+        "deployment_revision": deployment_revision,
     }
 
 
