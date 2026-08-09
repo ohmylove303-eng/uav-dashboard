@@ -11,6 +11,32 @@ if str(BACKEND_ROOT) not in sys.path:
 import official_building_registry  # noqa: E402
 
 
+class FakeResponse:
+    def __init__(self, *, status_code: int, text: str, json_data=None):
+        self.status_code = status_code
+        self.text = text
+        self.json_data = json_data
+
+    def json(self):
+        if self.json_data is None:
+            raise ValueError("not JSON")
+        return self.json_data
+
+
+class FakeAsyncClient:
+    def __init__(self, response: FakeResponse):
+        self.response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get(self, *args, **kwargs):
+        return self.response
+
+
 class OfficialBuildingRegistryTests(unittest.IsolatedAsyncioTestCase):
     def test_building_management_number_maps_to_building_hub_query(self):
         query = official_building_registry.building_hub_query_from_management_number(
@@ -71,6 +97,76 @@ class OfficialBuildingRegistryTests(unittest.IsolatedAsyncioTestCase):
                     official_building_registry._building_hub_upstream_status_reason(status),
                     f"molit_building_hub_upstream_http_{status}",
                 )
+
+    def test_building_hub_gateway_codes_are_classified_without_echoing_body(self):
+        cases = {
+            "SERVICE_ACCESS_DENIED_ERROR": "molit_building_hub_access_denied",
+            "SERVICE_KEY_IS_NOT_REGISTERED_ERROR": "molit_building_hub_key_unregistered",
+            "DEADLINE_HAS_EXPIRED_ERROR": "molit_building_hub_key_expired",
+            "LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR": "molit_building_hub_quota_exceeded",
+        }
+        for marker, expected in cases.items():
+            with self.subTest(marker=marker):
+                body = f"<resultMsg>{marker}</resultMsg><secret>must-not-escape</secret>"
+                reason = official_building_registry._building_hub_failure_reason(403, body)
+                self.assertEqual(reason, expected)
+                self.assertNotIn("must-not-escape", reason)
+
+    def test_building_hub_json_header_rejection_keeps_specific_gateway_reason(self):
+        payload = {
+            "response": {
+                "header": {
+                    "resultCode": "30",
+                    "resultMsg": "SERVICE_KEY_IS_NOT_REGISTERED_ERROR",
+                }
+            }
+        }
+        with self.assertRaisesRegex(
+            official_building_registry.OfficialBuildingRegistryError,
+            "molit_building_hub_key_unregistered",
+        ):
+            official_building_registry._as_records(payload)
+
+    async def test_building_hub_200_xml_gateway_failure_keeps_specific_reason(self):
+        response = FakeResponse(
+            status_code=200,
+            text=(
+                "<resultMsg>SERVICE_KEY_IS_NOT_REGISTERED_ERROR</resultMsg>"
+                "<secret>must-not-escape</secret>"
+            ),
+        )
+        with patch.object(
+            official_building_registry.httpx,
+            "AsyncClient",
+            return_value=FakeAsyncClient(response),
+        ):
+            with self.assertLogs(official_building_registry.LOGGER, level="WARNING") as logs:
+                with self.assertRaisesRegex(
+                    official_building_registry.OfficialBuildingRegistryError,
+                    "molit_building_hub_key_unregistered",
+                ):
+                    await official_building_registry._fetch_title_records({}, "server-only-key")
+
+        logged = "\n".join(logs.output)
+        self.assertNotIn("must-not-escape", logged)
+        self.assertNotIn("server-only-key", logged)
+
+    async def test_building_hub_valid_json_record_may_contain_error_marker_text(self):
+        payload = {
+            "response": {
+                "header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
+                "body": {"items": {"item": [{"bldNm": "INVALID_KEY PLAZA"}]}},
+            }
+        }
+        response = FakeResponse(status_code=200, text=str(payload), json_data=payload)
+        with patch.object(
+            official_building_registry.httpx,
+            "AsyncClient",
+            return_value=FakeAsyncClient(response),
+        ):
+            records = await official_building_registry._fetch_title_records({}, "server-only-key")
+
+        self.assertEqual(records, [{"bldNm": "INVALID_KEY PLAZA"}])
 
     def test_malformed_registry_payload_is_a_typed_failure(self):
         with self.assertRaisesRegex(

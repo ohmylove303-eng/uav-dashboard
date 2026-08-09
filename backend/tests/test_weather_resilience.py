@@ -169,9 +169,9 @@ class WeatherResilienceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(payload["available"])
         self.assertFalse(payload["authoritative"])
-        self.assertEqual(payload["reason"], "surface_weather_http_error")
+        self.assertEqual(payload["reason"], "surface_weather_upstream_unavailable")
         self.assertEqual(payload["source"], "weather_unavailable")
-        self.assertEqual(payload["source_chain"], ["weather_unavailable", "surface_weather_http_error"])
+        self.assertEqual(payload["source_chain"], ["weather_unavailable", "surface_weather_upstream_unavailable"])
         self.assertEqual(payload["temperature"], 18.0)
         self.assertEqual(payload["sunrise"], "05:40")
         self.assertIsNone(payload["authority_source"])
@@ -192,7 +192,75 @@ class WeatherResilienceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(payload["available"])
         self.assertFalse(payload["authoritative"])
-        self.assertEqual(payload["reason"], "surface_weather_http_error")
+        self.assertEqual(payload["reason"], "surface_weather_upstream_unavailable")
+
+    async def test_fetch_weather_safe_classifies_surface_auth_failure(self):
+        def handler(url: str, params: dict):
+            if "kma_sfctm2.php" in url:
+                return FakeResponse(status_code=403, text="FORBIDDEN")
+            if "open-meteo.com" in url:
+                raise main.httpx.ConnectError("display offline")
+            raise AssertionError(f"unexpected url: {url}")
+
+        with (
+            patch.object(main, "KMA_API_KEY", "test-kma-key"),
+            patch.object(main.httpx, "AsyncClient", side_effect=lambda *args, **kwargs: FakeAsyncClient(handler)),
+        ):
+            payload = await main.fetch_weather_safe(37.5665, 126.9780)
+
+        self.assertFalse(payload["available"])
+        self.assertFalse(payload["authoritative"])
+        self.assertEqual(payload["reason"], "surface_weather_auth_denied")
+
+    async def test_fetch_weather_safe_classifies_200_surface_auth_body(self):
+        def handler(url: str, params: dict):
+            if "kma_sfctm2.php" in url:
+                return FakeResponse(status_code=200, text="INVALID AUTH KEY")
+            if "open-meteo.com" in url:
+                raise main.httpx.ConnectError("display offline")
+            raise AssertionError(f"unexpected url: {url}")
+
+        with (
+            patch.object(main, "KMA_API_KEY", "test-kma-key"),
+            patch.object(main.httpx, "AsyncClient", side_effect=lambda *args, **kwargs: FakeAsyncClient(handler)),
+        ):
+            payload = await main.fetch_weather_safe(37.5665, 126.9780)
+
+        self.assertFalse(payload["available"])
+        self.assertFalse(payload["authoritative"])
+        self.assertEqual(payload["reason"], "surface_weather_auth_denied")
+
+    async def test_valid_surface_row_may_contain_auth_marker_text(self):
+        kma_text = kma_surface_text(datetime.now(main.KST) - timedelta(minutes=5)).replace(
+            "맑음",
+            "FORBIDDEN",
+        )
+
+        def handler(url: str, params: dict):
+            if "kma_sfctm2.php" in url:
+                return FakeResponse(status_code=200, text=kma_text)
+            if "open-meteo.com" in url:
+                return FakeResponse(status_code=200, json_data=open_meteo_display_payload())
+            raise AssertionError(f"unexpected url: {url}")
+
+        with (
+            patch.object(main, "KMA_API_KEY", "test-kma-key"),
+            patch.object(main.httpx, "AsyncClient", side_effect=lambda *args, **kwargs: FakeAsyncClient(handler)),
+        ):
+            payload = await main.fetch_weather_safe(37.5665, 126.9780)
+
+        self.assertTrue(payload["available"])
+        self.assertTrue(payload["authoritative"])
+
+    def test_surface_http_status_takes_precedence_over_conflicting_body_marker(self):
+        self.assertEqual(
+            main._surface_weather_http_reason(429, "AUTHENTICATION"),
+            "surface_weather_quota_exceeded",
+        )
+        self.assertEqual(
+            main._surface_weather_http_reason(503, "FORBIDDEN"),
+            "surface_weather_upstream_unavailable",
+        )
 
     async def test_fetch_weather_safe_returns_typed_reason_for_surface_parse_failure(self):
         def handler(url: str, params: dict):

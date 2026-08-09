@@ -338,3 +338,111 @@ test("identifies the official upstream that is unavailable without fabricating c
     { source_origin: "vworld_api_wfs", outcome: "upstream_status_502" },
   ]);
 });
+
+test("classifies a VWorld invalid-key service exception without exposing its response", async () => {
+  const invalidKeyBody = `<?xml version="1.0"?><ServiceExceptionReport><ServiceException code="INVALID_KEY">등록되지 않은 인증키입니다.</ServiceException></ServiceExceptionReport>`;
+  const worker = createWorker({
+    fetchImpl: async () => new Response(invalidKeyBody, {
+      status: 200,
+      headers: { "content-type": "application/xml" },
+    }),
+  });
+
+  const response = await worker.fetch(
+    new Request(bridgeUrl, {
+      headers: { authorization: "Bearer server-only-token" },
+    }),
+    env,
+  );
+  const payload = await response.json();
+
+  assert.equal(payload.available, false);
+  assert.equal(payload.reason, "building_key_unregistered");
+  assert.deepEqual(payload.upstream_attempts, [
+    { source_origin: "vworld_map_wfs", outcome: "key_unregistered" },
+    { source_origin: "vworld_api_wfs", outcome: "key_unregistered" },
+  ]);
+  assert.equal(JSON.stringify(payload).includes("등록되지 않은 인증키"), false);
+});
+
+test("does not classify marker text inside valid GeoJSON as an authentication failure", async () => {
+  const validGeoJson = structuredClone(buildingFeatures);
+  validGeoJson.features[0].properties.buld_nm = "INVALID_KEY PLAZA";
+  const worker = createWorker({
+    fetchImpl: async () => Response.json(validGeoJson),
+  });
+
+  const response = await worker.fetch(
+    new Request(bridgeUrl, {
+      headers: { authorization: "Bearer server-only-token" },
+    }),
+    env,
+  );
+  const payload = await response.json();
+
+  assert.notEqual(payload.reason, "building_key_unregistered");
+  assert.equal(
+    (payload.upstream_attempts ?? []).some(({ outcome }) => outcome === "key_unregistered"),
+    false,
+  );
+});
+
+test("classifies a structured VWorld JSON key error without exposing its message", async () => {
+  const worker = createWorker({
+    fetchImpl: async () => Response.json({
+      error: { code: "INVALID_KEY", message: "secret upstream detail" },
+    }),
+  });
+
+  const response = await worker.fetch(
+    new Request(bridgeUrl, {
+      headers: { authorization: "Bearer server-only-token" },
+    }),
+    env,
+  );
+  const payload = await response.json();
+
+  assert.equal(payload.available, false);
+  assert.equal(payload.reason, "building_key_unregistered");
+  assert.equal(JSON.stringify(payload).includes("secret upstream detail"), false);
+});
+
+test("does not substring-match an unrelated structured VWorld error code", async () => {
+  const worker = createWorker({
+    fetchImpl: async () => Response.json({ error: { code: "NOT_INVALID_KEY" } }),
+  });
+
+  const response = await worker.fetch(
+    new Request(bridgeUrl, {
+      headers: { authorization: "Bearer server-only-token" },
+    }),
+    env,
+  );
+  const payload = await response.json();
+
+  assert.notEqual(payload.reason, "building_key_unregistered");
+});
+
+test("redacts arbitrary transport exception messages", async () => {
+  const worker = createWorker({
+    fetchImpl: async () => {
+      throw new Error("building_secret-token-must-not-escape");
+    },
+  });
+
+  const response = await worker.fetch(
+    new Request(bridgeUrl, {
+      headers: { authorization: "Bearer server-only-token" },
+    }),
+    env,
+  );
+  const payload = await response.json();
+  const serialized = JSON.stringify(payload);
+
+  assert.equal(payload.available, false);
+  assert.equal(serialized.includes("secret-token-must-not-escape"), false);
+  assert.equal(
+    payload.upstream_attempts.every(({ outcome }) => outcome === "upstream_request_failed"),
+    true,
+  );
+});

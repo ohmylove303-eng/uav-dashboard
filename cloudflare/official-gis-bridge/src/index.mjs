@@ -8,6 +8,14 @@ const RECEIPT_SOURCE = "official_gis_bridge_receipt";
 const RECEIPT_PARTS = ["target_geometry", "opposing_geometry", "road_geometry", "road_crossing", "facade_gap"];
 const SELECTION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TARGET_IDENTIFIER_KINDS = new Set(["native_feature_id", "bd_mgt_sn"]);
+const SAFE_UPSTREAM_OUTCOMES = new Set([
+  "key_unregistered",
+  "domain_rejected",
+  "key_expired",
+  "service_exception",
+  "upstream_invalid_json",
+  "upstream_request_failed",
+]);
 
 function json(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
@@ -31,6 +39,25 @@ function finiteCoordinate(value, minimum, maximum) {
 
 function validSelectionId(value) {
   return typeof value === "string" && SELECTION_ID_PATTERN.test(value);
+}
+
+function structuredServiceReason(payload) {
+  if (!payload || typeof payload !== "object" || payload.type === "FeatureCollection") return null;
+  const codes = [
+    payload.code,
+    payload.error?.code,
+    payload.response?.error?.code,
+    payload.response?.status,
+  ].filter((value) => typeof value === "string").map((value) => value.trim().toUpperCase());
+  if (codes.some((code) => code === "INVALID_KEY" || code === "UNREGISTERED_KEY")) return "key_unregistered";
+  if (codes.includes("INVALID_DOMAIN")) return "domain_rejected";
+  if (codes.some((code) => code === "EXPIRED_KEY" || code === "KEY_EXPIRED")) return "key_expired";
+  return null;
+}
+
+function safeUpstreamOutcome(value) {
+  if (SAFE_UPSTREAM_OUTCOMES.has(value) || /^upstream_status_\d{3}$/.test(value)) return value;
+  return "upstream_request_failed";
 }
 
 function stableIdentifierValue(value) {
@@ -263,13 +290,27 @@ async function fetchJson(fetchImpl, url, referer, source) {
   const headers = { accept: "application/json", "user-agent": "uav-official-gis-bridge/1.0" };
   if (referer) headers.referer = referer;
   const response = await fetchImpl(url, { headers });
-  if (!response.ok) throw new Error(`${source}_upstream_status_${response.status}`);
   const text = await response.text();
+  let parsed;
   try {
-    return JSON.parse(text);
+    parsed = JSON.parse(text);
   } catch {
-    throw new Error(`${source}_upstream_invalid_json`);
+    parsed = null;
   }
+  const structuredReason = structuredServiceReason(parsed);
+  if (response.ok && parsed !== null && !structuredReason) return parsed;
+  const safeResponseReason = (() => {
+    const value = text.slice(0, 4096).toUpperCase();
+    if (value.includes("INVALID_KEY") || value.includes("등록되지 않은 인증키")) return "key_unregistered";
+    if (value.includes("INVALID_DOMAIN") || value.includes("등록되지 않은 도메인")) return "domain_rejected";
+    if (value.includes("EXPIRED") && value.includes("KEY")) return "key_expired";
+    if (value.includes("SERVICEEXCEPTION")) return "service_exception";
+    return null;
+  })();
+  const responseReason = structuredReason ?? safeResponseReason;
+  if (!response.ok) throw new Error(`${source}_${responseReason ?? `upstream_status_${response.status}`}`);
+  if (responseReason) throw new Error(`${source}_${responseReason}`);
+  throw new Error(`${source}_upstream_invalid_json`);
 }
 
 function wfsRequests({ typeName, maxFeatures, bbox, propertyName, env }) {
@@ -322,20 +363,20 @@ function roadRequests(lat, lon, env) {
 }
 
 async function fetchOfficialWfsJson(fetchImpl, requests, referer, source) {
-  let lastError;
   const upstreamAttempts = [];
   for (const request of requests) {
     try {
       const requestReferer = request.sourceOrigin === "vworld_map_wfs" ? referer : null;
       return { payload: await fetchJson(fetchImpl, request.url, requestReferer, source), sourceOrigin: request.sourceOrigin };
     } catch (error) {
-      lastError = error;
       const message = error instanceof Error ? error.message : "upstream_request_failed";
-      const outcome = message.startsWith(`${source}_`) ? message.slice(source.length + 1) : "upstream_request_failed";
+      const rawOutcome = message.startsWith(`${source}_`) ? message.slice(source.length + 1) : "upstream_request_failed";
+      const outcome = safeUpstreamOutcome(rawOutcome);
       upstreamAttempts.push({ source_origin: request.sourceOrigin, outcome });
     }
   }
-  const failure = lastError instanceof Error ? lastError : new Error(`${source}_upstream_unavailable`);
+  const finalOutcome = upstreamAttempts.at(-1)?.outcome ?? "upstream_request_failed";
+  const failure = new Error(`${source}_${finalOutcome}`);
   failure.upstreamAttempts = upstreamAttempts;
   throw failure;
 }

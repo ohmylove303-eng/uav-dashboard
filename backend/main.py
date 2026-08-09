@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 import httpx
 import asyncio
+import logging
 import os
 import json
 import math
@@ -29,6 +30,8 @@ from evaluation_authority import (
 )
 from urban_canyon import measure_facade_gap
 from official_building_registry import enrich_verified_footprint, service_key_configured as molit_building_hub_key_configured
+
+LOGGER = logging.getLogger(__name__)
 
 app = FastAPI(
     title="UAV Urban Ops API",
@@ -263,6 +266,9 @@ UNVERIFIED_BUILDING_SOURCE_HINTS = (
 )
 SURFACE_WEATHER_REASON_TIMEOUT = "surface_weather_timeout"
 SURFACE_WEATHER_REASON_HTTP = "surface_weather_http_error"
+SURFACE_WEATHER_REASON_AUTH = "surface_weather_auth_denied"
+SURFACE_WEATHER_REASON_QUOTA = "surface_weather_quota_exceeded"
+SURFACE_WEATHER_REASON_UPSTREAM = "surface_weather_upstream_unavailable"
 SURFACE_WEATHER_REASON_PARSE = "surface_weather_parse_error"
 SURFACE_WEATHER_REASON_UNCONFIGURED = "surface_weather_unconfigured"
 SURFACE_WEATHER_REASON_STALE = "surface_weather_stale"
@@ -733,6 +739,32 @@ class SurfaceWeatherFetchError(Exception):
     def __init__(self, reason: str):
         super().__init__(reason)
         self.reason = reason
+
+
+def _surface_weather_http_reason(status_code: int, body: str = "") -> str:
+    """Return a stable KMA failure class without returning the upstream body."""
+
+    status = int(status_code)
+    text = body[:4096].upper()
+    auth_markers = (
+        "INVALID AUTH",
+        "AUTHENTICATION",
+        "UNAUTHORIZED",
+        "FORBIDDEN",
+        "등록되지 않은 인증키",
+        "인증키가 유효하지",
+    )
+    if status in {401, 403}:
+        return SURFACE_WEATHER_REASON_AUTH
+    if status == 429:
+        return SURFACE_WEATHER_REASON_QUOTA
+    if status >= 500:
+        return SURFACE_WEATHER_REASON_UPSTREAM
+    if any(marker in text for marker in auth_markers):
+        return SURFACE_WEATHER_REASON_AUTH
+    if "LIMITED_NUMBER_OF_SERVICE_REQUESTS" in text:
+        return SURFACE_WEATHER_REASON_QUOTA
+    return SURFACE_WEATHER_REASON_HTTP
 
 
 def _surface_weather_values(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -2191,6 +2223,9 @@ async def fetch_weather_safe(lat: float, lon: float, selection_id: Optional[str]
     typed_surface_failure_reasons = {
         SURFACE_WEATHER_REASON_TIMEOUT,
         SURFACE_WEATHER_REASON_HTTP,
+        SURFACE_WEATHER_REASON_AUTH,
+        SURFACE_WEATHER_REASON_QUOTA,
+        SURFACE_WEATHER_REASON_UPSTREAM,
         SURFACE_WEATHER_REASON_PARSE,
         SURFACE_WEATHER_REASON_UNCONFIGURED,
         SURFACE_WEATHER_REASON_STALE,
@@ -2467,6 +2502,7 @@ async def fetch_kma_surface_observation(lat: float, lon: float) -> Dict[str, Any
 
     station = nearest_kma_surface_station(lat, lon)
     last_http_status: Optional[int] = None
+    last_http_reason: Optional[str] = None
     for cycle in latest_kma_surface_cycles():
         try:
             async with httpx.AsyncClient(timeout=KMA_SURFACE_REQUEST_TIMEOUT_S) as client:
@@ -2485,9 +2521,17 @@ async def fetch_kma_surface_observation(lat: float, lon: float) -> Dict[str, Any
             raise SurfaceWeatherFetchError(SURFACE_WEATHER_REASON_HTTP) from error
         if response.status_code != 200:
             last_http_status = response.status_code
+            last_http_reason = _surface_weather_http_reason(response.status_code, response.text)
+            if last_http_reason in {SURFACE_WEATHER_REASON_AUTH, SURFACE_WEATHER_REASON_QUOTA}:
+                break
             continue
         row = _parse_kma_surface_row(response.text)
         if row is None:
+            body_reason = _surface_weather_http_reason(response.status_code, response.text)
+            if body_reason in {SURFACE_WEATHER_REASON_AUTH, SURFACE_WEATHER_REASON_QUOTA}:
+                last_http_status = response.status_code
+                last_http_reason = body_reason
+                break
             continue
         observed_at_utc = _parse_surface_weather_datetime(row.get("TM"))
         if observed_at_utc is None:
@@ -2533,7 +2577,13 @@ async def fetch_kma_surface_observation(lat: float, lon: float) -> Dict[str, Any
             selection_id=None,
         )
     if last_http_status is not None:
-        raise SurfaceWeatherFetchError(SURFACE_WEATHER_REASON_HTTP)
+        reason = last_http_reason or SURFACE_WEATHER_REASON_HTTP
+        LOGGER.warning(
+            "official_provider_failure provider=kma_surface status=%s reason=%s",
+            last_http_status,
+            reason,
+        )
+        raise SurfaceWeatherFetchError(reason)
     raise SurfaceWeatherFetchError(SURFACE_WEATHER_REASON_PARSE)
 
 def latest_kma_cycles(now_utc: Optional[datetime] = None, limit: int = 4) -> List[str]:
