@@ -22,6 +22,7 @@ import math
 import re
 import secrets
 import time
+from urllib.parse import unquote
 from uuid import NAMESPACE_URL, uuid5
 from evaluation_authority import (
     WeatherEvidenceContext,
@@ -187,13 +188,22 @@ KMA_CREDENTIAL_ENV_BY_CAPABILITY = {
 }
 
 
+def _normalize_kma_api_key(value: Optional[str]) -> Optional[str]:
+    """Accept the raw KMA authKey value or the copied ``authKey=...`` form."""
+    candidate = str(value or "").strip()
+    if not candidate:
+        return None
+    if candidate.lower().startswith("authkey="):
+        candidate = candidate.partition("=")[2]
+    return unquote(candidate).strip() or None
+
+
 def _kma_api_key_for(capability: str) -> Optional[str]:
     """Resolve a server-only KMA credential with legacy compatibility."""
     dedicated_name = KMA_CREDENTIAL_ENV_BY_CAPABILITY.get(capability)
     dedicated = os.getenv(dedicated_name) if dedicated_name else None
     legacy = os.getenv("KMA_API_KEY") or KMA_API_KEY
-    value = (dedicated or legacy or "").strip()
-    return value or None
+    return _normalize_kma_api_key(dedicated or legacy)
 
 
 def _kma_capability_configuration() -> Dict[str, bool]:

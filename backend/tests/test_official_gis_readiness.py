@@ -119,6 +119,17 @@ class OfficialGisReadinessTests(unittest.TestCase):
         self.assertNotIn("surface-kma-key", str(payload))
         self.assertNotIn("upper-air-kma-key", str(payload))
 
+    def test_surface_kma_key_accepts_copied_auth_key_query_value_without_leaking_it(self):
+        with patch.dict(
+            main.os.environ,
+            {"KMA_SURFACE_API_KEY": "authKey=encoded%2Fsurface%2Bkey"},
+            clear=True,
+        ):
+            self.assertEqual(
+                main._kma_api_key_for("surface"),
+                "encoded/surface+key",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
