@@ -99,6 +99,26 @@ class OfficialGisReadinessTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["deployment_revision"], "c6753982221d")
 
+    def test_weather_credentials_are_reported_by_capability_without_values(self):
+        with patch.dict(
+            main.os.environ,
+            {
+                "KMA_API_KEY": "legacy-kma-key",
+                "KMA_SURFACE_API_KEY": "surface-kma-key",
+                "KMA_UPPER_AIR_API_KEY": "upper-air-kma-key",
+            },
+            clear=False,
+        ):
+            response = self.client.get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["kma_surface_configured"])
+        self.assertTrue(payload["kma_upper_air_configured"])
+        self.assertTrue(payload["kma_wind_profiler_configured"])
+        self.assertNotIn("surface-kma-key", str(payload))
+        self.assertNotIn("upper-air-kma-key", str(payload))
+
 
 if __name__ == "__main__":
     unittest.main()

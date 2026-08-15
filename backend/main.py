@@ -180,6 +180,31 @@ DRONE_SPECS = {
 }
 
 KMA_API_KEY = os.getenv("KMA_API_KEY")
+KMA_CREDENTIAL_ENV_BY_CAPABILITY = {
+    "surface": "KMA_SURFACE_API_KEY",
+    "upper_air": "KMA_UPPER_AIR_API_KEY",
+    "wind_profiler": "KMA_WIND_PROFILER_API_KEY",
+}
+
+
+def _kma_api_key_for(capability: str) -> Optional[str]:
+    """Resolve a server-only KMA credential with legacy compatibility."""
+    dedicated_name = KMA_CREDENTIAL_ENV_BY_CAPABILITY.get(capability)
+    dedicated = os.getenv(dedicated_name) if dedicated_name else None
+    legacy = os.getenv("KMA_API_KEY") or KMA_API_KEY
+    value = (dedicated or legacy or "").strip()
+    return value or None
+
+
+def _kma_capability_configuration() -> Dict[str, bool]:
+    """Report credential presence without returning provider credentials."""
+    return {
+        "surface": bool(_kma_api_key_for("surface")),
+        "upper_air": bool(_kma_api_key_for("upper_air")),
+        "wind_profiler": bool(_kma_api_key_for("wind_profiler")),
+    }
+
+
 KMA_SURFACE_STATIONS = [
     {"id": 102, "name": "백령도", "lat": 37.967, "lon": 124.630},
     {"id": 105, "name": "강릉", "lat": 37.751, "lon": 128.891},
@@ -2513,7 +2538,8 @@ async def fetch_open_meteo_surface_display(lat: float, lon: float) -> Optional[D
 
 
 async def fetch_kma_surface_observation(lat: float, lon: float) -> Dict[str, Any]:
-    if not KMA_API_KEY:
+    api_key = _kma_api_key_for("surface")
+    if not api_key:
         raise SurfaceWeatherFetchError(SURFACE_WEATHER_REASON_UNCONFIGURED)
 
     station = nearest_kma_surface_station(lat, lon)
@@ -2528,7 +2554,7 @@ async def fetch_kma_surface_observation(lat: float, lon: float) -> Dict[str, Any
                         "tm": cycle,
                         "stn": station["id"],
                         "help": 1,
-                        "authKey": KMA_API_KEY,
+                        "authKey": api_key,
                     },
                 )
         except httpx.TimeoutException as error:
@@ -2833,7 +2859,8 @@ async def fetch_wis2_station_metadata(stn: int) -> Optional[Dict[str, Any]]:
     return station
 
 async def fetch_kma_upper_air_profile(lat: float, lon: float) -> Optional[Dict]:
-    if not KMA_API_KEY:
+    api_key = _kma_api_key_for("upper_air")
+    if not api_key:
         return None
 
     cache_key = f"{_round_coord(lat)},{_round_coord(lon)}"
@@ -2854,7 +2881,7 @@ async def fetch_kma_upper_air_profile(lat: float, lon: float) -> Optional[Dict]:
                     "stn": station["id"],
                     "pa": 0,
                     "help": 0,
-                    "authKey": KMA_API_KEY
+                    "authKey": api_key
                 }
                 try:
                     response = await client.get(url, params=params)
@@ -2882,7 +2909,8 @@ async def fetch_kma_upper_air_profile(lat: float, lon: float) -> Optional[Dict]:
 
 
 async def fetch_kma_wind_profiler_profile(lat: float, lon: float, mode: str = WIND_PROFILER_MODE) -> Optional[Dict]:
-    if not KMA_API_KEY:
+    api_key = _kma_api_key_for("wind_profiler")
+    if not api_key:
         return None
 
     cache_key = f"{mode}:{_round_coord(lat)},{_round_coord(lon)}"
@@ -2898,7 +2926,7 @@ async def fetch_kma_wind_profiler_profile(lat: float, lon: float, mode: str = WI
                 "stn": 0,
                 "mode": mode,
                 "help": 0,
-                "authKey": KMA_API_KEY
+                "authKey": api_key
             }
             try:
                 response = await client.get(url, params=params)
@@ -3082,10 +3110,14 @@ async def health_check():
         or os.getenv("GIT_COMMIT")
         or "local"
     )[:12]
+    kma_configuration = _kma_capability_configuration()
     return {
         "status": "ok",
         "version": app.version,
-        "kma_configured": bool(KMA_API_KEY),
+        "kma_configured": any(kma_configuration.values()),
+        "kma_surface_configured": kma_configuration["surface"],
+        "kma_upper_air_configured": kma_configuration["upper_air"],
+        "kma_wind_profiler_configured": kma_configuration["wind_profiler"],
         "deployment_revision": deployment_revision,
     }
 
@@ -3096,7 +3128,7 @@ async def get_official_gis_readiness_api():
 
 @app.get("/api/kma/status")
 async def get_kma_status(lat: float = 37.558056, lon: float = 126.708333):
-    if not KMA_API_KEY:
+    if not _kma_api_key_for("upper_air"):
         return {
             "configured": False,
             "available": False,

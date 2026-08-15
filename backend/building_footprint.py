@@ -246,10 +246,6 @@ def _resolve_vworld_api_key() -> Optional[str]:
         "VWORLD_OFFICIAL_DATA_API_KEY",
         "VWORLD_DATA_API_KEY",
         "VWORLD_API_KEY",
-        "NEXT_PUBLIC_VWORLD_API_KEY",
-        "VITE_VWORLD_API_KEY",
-        "VITE_VWORLD_3D_API_KEY",
-        "VITE_VWORLD_KEY",
     ):
         value = os.getenv(key_name)
         if value:
@@ -263,10 +259,6 @@ def _resolve_vworld_api_key() -> Optional[str]:
             "VWORLD_OFFICIAL_DATA_API_KEY",
             "VWORLD_DATA_API_KEY",
             "VWORLD_API_KEY",
-            "NEXT_PUBLIC_VWORLD_API_KEY",
-            "VITE_VWORLD_API_KEY",
-            "VITE_VWORLD_3D_API_KEY",
-            "VITE_VWORLD_KEY",
         ):
             value = values.get(key_name)
             if value:
