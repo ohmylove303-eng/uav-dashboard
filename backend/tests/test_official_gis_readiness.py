@@ -54,7 +54,7 @@ class OfficialGisReadinessTests(unittest.TestCase):
         self.assertEqual(payload["building_hub_key_resolution"], "semantic_aliases_v2")
         self.assertNotIn("browser-key", str(payload))
 
-    def test_readiness_reports_ready_only_for_server_side_bridge_configuration(self):
+    def test_readiness_reports_configuration_without_claiming_provider_authorization(self):
         with (
             patch.object(main, "OFFICIAL_GIS_BRIDGE_URL", "https://bridge.example.test/api/canyon-width"),
             patch.object(main, "OFFICIAL_GIS_BRIDGE_TOKEN", "server-only-token"),
@@ -65,7 +65,9 @@ class OfficialGisReadinessTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["status"], "configured")
+        self.assertEqual(payload["configuration_status"], "configured")
+        self.assertEqual(payload["provider_authorization_status"], "not_checked")
         self.assertEqual(payload["missing_prerequisites"], [])
         self.assertNotIn("server-only", str(payload))
 

@@ -1097,8 +1097,13 @@ def _official_gis_readiness() -> Dict[str, Any]:
     if not building_hub_key_configured:
         missing.append("molit_building_hub_service_key")
 
+    configuration_status = "configured" if not missing else "incomplete"
     return {
-        "status": "ready" if not missing else "hold",
+        # Configuration is intentionally not reported as provider authorization.
+        # The latter is established only by a bound building/canyon/weather receipt.
+        "status": "configured" if not missing else "hold",
+        "configuration_status": configuration_status,
+        "provider_authorization_status": "not_checked",
         "vworld_server_data_key_configured": vworld_data_key_configured,
         "vworld_referer_source": "environment" if (os.getenv("VWORLD_REFERER") or os.getenv("VWORLD_DOMAIN")) else "default",
         "official_gis_bridge_url_configured": bridge_url_configured,
@@ -2156,7 +2161,7 @@ def _bind_canyon_evidence_to_selection(
             "canyon_selection_id_missing",
             target_building=target or None,
         )
-    elif selected_target_identifier is None or receipt_target_identifier is None:
+    elif selected_target_identifier is None:
         canyon = _unavailable_canyon_evidence(
             road_evidence,
             "canyon_target_identifier_missing",
@@ -2166,6 +2171,17 @@ def _bind_canyon_evidence_to_selection(
         canyon = _unavailable_canyon_evidence(
             road_evidence,
             "canyon_selection_mismatch",
+            target_building=target or None,
+        )
+    elif canyon.get("available") is False and canyon.get("reason"):
+        # A typed upstream HOLD receipt has no target geometry identifier by
+        # design. Preserve its provider error instead of misreporting this as
+        # a click-selection failure.
+        canyon["receipt"] = receipt
+    elif receipt_target_identifier is None:
+        canyon = _unavailable_canyon_evidence(
+            road_evidence,
+            "canyon_target_identifier_missing",
             target_building=target or None,
         )
     elif receipt_target_identifier != selected_target_identifier:

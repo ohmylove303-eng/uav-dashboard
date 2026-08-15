@@ -104,6 +104,29 @@ class CanyonAuthorityBoundaryTests(unittest.TestCase):
         self.assertIsNone(payload["ews"])
         self.assertIsNone(payload["correlation_id"])
 
+    def test_typed_upstream_canyon_hold_preserves_its_provider_reason(self) -> None:
+        canyon = {
+            "available": False,
+            "official_available": False,
+            "reason": "network_error",
+            "selection_id": SELECTION_ID,
+            "receipt": {
+                "kind": "official_canyon_width_unavailable",
+                "selection_id": SELECTION_ID,
+            },
+        }
+
+        bound = main._bind_canyon_evidence_to_selection(
+            canyon,
+            SELECTION_ID,
+            {},
+            {"bd_mgt_sn": "1114010300100310000019224"},
+        )
+
+        self.assertFalse(bound["available"])
+        self.assertEqual(bound["reason"], "network_error")
+        self.assertEqual(bound["receipt"]["selection_id"], SELECTION_ID)
+
     def test_evaluation_request_requires_valid_selection_id_directly(self) -> None:
         invalid_cases = (
             ("absent", {}),
