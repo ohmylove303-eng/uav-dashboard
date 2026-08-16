@@ -1801,7 +1801,7 @@ def _with_official_gis_bridge_unavailable_provenance(payload: Dict[str, Any]) ->
 def _sanitize_bridge_upstream_attempts(raw_attempts: Any) -> List[Dict[str, str]]:
     if not isinstance(raw_attempts, list):
         return []
-    allowed_origins = {"vworld_map_wfs", "vworld_api_wfs"}
+    allowed_origins = {"vworld_map_wfs", "vworld_api_wfs", "vworld_api_wfs_4326"}
     sanitized: List[Dict[str, str]] = []
     for attempt in raw_attempts:
         if not isinstance(attempt, dict):

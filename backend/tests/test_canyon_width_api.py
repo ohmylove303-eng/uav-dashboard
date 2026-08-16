@@ -587,6 +587,7 @@ class CanyonWidthRouteTests(unittest.TestCase):
             "upstream_attempts": [
                 {"source_origin": "vworld_map_wfs", "outcome": "upstream_status_502"},
                 {"source_origin": "vworld_api_wfs", "outcome": "upstream_status_502"},
+                {"source_origin": "vworld_api_wfs_4326", "outcome": "upstream_status_502"},
             ],
             "receipt": {
                 "kind": "official_canyon_width_unavailable",
@@ -633,6 +634,7 @@ class CanyonWidthRouteTests(unittest.TestCase):
             [
                 {"source_origin": "vworld_map_wfs", "outcome": "upstream_status_502"},
                 {"source_origin": "vworld_api_wfs", "outcome": "upstream_status_502"},
+                {"source_origin": "vworld_api_wfs_4326", "outcome": "upstream_status_502"},
             ],
         )
 
