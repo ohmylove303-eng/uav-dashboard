@@ -3138,29 +3138,56 @@ async def get_official_gis_readiness_api():
 
 @app.get("/api/kma/status")
 async def get_kma_status(lat: float = 37.558056, lon: float = 126.708333):
-    if not _kma_api_key_for("upper_air"):
-        return {
-            "configured": False,
-            "available": False,
-            "reason": "missing_kma_api_key"
-        }
+    # A usable upper-air profile alone is not enough for an authoritative
+    # near-surface flight decision. Keep each provider capability explicit so
+    # operations cannot mistake a radiosonde success for verified 0-200 m weather.
+    surface, upper_air, wind_profiler = await asyncio.gather(
+        fetch_weather_safe(lat, lon),
+        fetch_kma_upper_air_profile_safe(lat, lon),
+        fetch_kma_wind_profiler_profile_safe(lat, lon),
+    )
+    surface_available = bool(surface.get("available") and surface.get("authoritative"))
+    upper_air_available = bool(upper_air and not upper_air.get("stale_cache"))
+    wind_profiler_available = bool(wind_profiler and not wind_profiler.get("stale_cache"))
+    authoritative_available = surface_available and upper_air_available and wind_profiler_available
 
-    profile = await fetch_kma_upper_air_profile(lat, lon)
-    if not profile:
-        return {
-            "configured": True,
-            "available": False,
-            "reason": "no_recent_profile_or_key_not_authorized"
-        }
-
-    return {
-        "configured": True,
-        "available": True,
-        "station_id": profile["station_id"],
-        "station_name": profile["station_name"],
-        "observed_at_utc": profile["observed_at_utc"],
-        "layer_count": len(profile["layers"])
+    result = {
+        "configured": any(bool(_kma_api_key_for(capability)) for capability in KMA_CREDENTIAL_ENV_BY_CAPABILITY),
+        "available": authoritative_available,
+        "authoritative_flight_weather_available": authoritative_available,
+        "reason": (
+            surface.get("reason")
+            if not surface_available
+            else "wind_profiler_unavailable"
+            if not wind_profiler_available
+            else "upper_air_profile_unavailable"
+            if not upper_air_available
+            else None
+        ),
+        "surface": {
+            "configured": bool(_kma_api_key_for("surface")),
+            "available": surface_available,
+            "reason": surface.get("reason") if not surface_available else None,
+            "observed_at_kst": surface.get("observed_at_kst"),
+        },
+        "upper_air": {
+            "configured": bool(_kma_api_key_for("upper_air")),
+            "available": upper_air_available,
+            "station_id": upper_air.get("station_id") if upper_air_available else None,
+            "station_name": upper_air.get("station_name") if upper_air_available else None,
+            "observed_at_utc": upper_air.get("observed_at_utc") if upper_air_available else None,
+            "layer_count": len(upper_air.get("layers") or []) if upper_air_available else 0,
+        },
+        "wind_profiler": {
+            "configured": bool(_kma_api_key_for("wind_profiler")),
+            "available": wind_profiler_available,
+            "station_id": wind_profiler.get("station_id") if wind_profiler_available else None,
+            "station_name": wind_profiler.get("station_name") if wind_profiler_available else None,
+            "observed_at_utc": wind_profiler.get("observed_at_utc") if wind_profiler_available else None,
+            "layer_count": len(wind_profiler.get("layers") or []) if wind_profiler_available else 0,
+        },
     }
+    return result
 
 @app.get("/api/kp")
 async def get_kp_index_api():

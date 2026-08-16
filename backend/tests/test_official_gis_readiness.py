@@ -1,7 +1,7 @@
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -129,6 +129,42 @@ class OfficialGisReadinessTests(unittest.TestCase):
                 main._kma_api_key_for("surface"),
                 "encoded/surface+key",
             )
+
+    def test_kma_status_requires_surface_and_low_altitude_profile_for_authoritative_availability(self):
+        with (
+            patch.object(
+                main,
+                "fetch_weather_safe",
+                AsyncMock(return_value={
+                    "available": False,
+                    "authoritative": False,
+                    "reason": "surface_weather_auth_denied",
+                }),
+            ),
+            patch.object(
+                main,
+                "fetch_kma_upper_air_profile_safe",
+                AsyncMock(return_value={
+                    "station_id": 47102,
+                    "station_name": "upper-air-station",
+                    "observed_at_utc": "202608160000",
+                    "layers": [{"height_m": 200}],
+                    "stale_cache": False,
+                }),
+            ),
+            patch.object(main, "fetch_kma_wind_profiler_profile_safe", AsyncMock(return_value=None)),
+        ):
+            response = self.client.get("/api/kma/status")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["available"])
+        self.assertFalse(payload["authoritative_flight_weather_available"])
+        self.assertEqual(payload["reason"], "surface_weather_auth_denied")
+        self.assertFalse(payload["surface"]["available"])
+        self.assertTrue(payload["upper_air"]["available"])
+        self.assertFalse(payload["wind_profiler"]["available"])
+        self.assertNotIn("kma-key", str(payload))
 
 
 if __name__ == "__main__":
