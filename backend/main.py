@@ -206,6 +206,17 @@ def _kma_api_key_for(capability: str) -> Optional[str]:
     return _normalize_kma_api_key(dedicated or legacy)
 
 
+def _kma_credential_scope(capability: str) -> str:
+    """Expose only the active credential path, never a credential value."""
+    dedicated_name = KMA_CREDENTIAL_ENV_BY_CAPABILITY.get(capability)
+    dedicated = os.getenv(dedicated_name) if dedicated_name else None
+    if _normalize_kma_api_key(dedicated):
+        return "dedicated"
+    if _normalize_kma_api_key(os.getenv("KMA_API_KEY") or KMA_API_KEY):
+        return "legacy"
+    return "unconfigured"
+
+
 def _kma_capability_configuration() -> Dict[str, bool]:
     """Report credential presence without returning provider credentials."""
     return {
@@ -3166,12 +3177,14 @@ async def get_kma_status(lat: float = 37.558056, lon: float = 126.708333):
         ),
         "surface": {
             "configured": bool(_kma_api_key_for("surface")),
+            "credential_scope": _kma_credential_scope("surface"),
             "available": surface_available,
             "reason": surface.get("reason") if not surface_available else None,
             "observed_at_kst": surface.get("observed_at_kst"),
         },
         "upper_air": {
             "configured": bool(_kma_api_key_for("upper_air")),
+            "credential_scope": _kma_credential_scope("upper_air"),
             "available": upper_air_available,
             "station_id": upper_air.get("station_id") if upper_air_available else None,
             "station_name": upper_air.get("station_name") if upper_air_available else None,
@@ -3180,6 +3193,7 @@ async def get_kma_status(lat: float = 37.558056, lon: float = 126.708333):
         },
         "wind_profiler": {
             "configured": bool(_kma_api_key_for("wind_profiler")),
+            "credential_scope": _kma_credential_scope("wind_profiler"),
             "available": wind_profiler_available,
             "station_id": wind_profiler.get("station_id") if wind_profiler_available else None,
             "station_name": wind_profiler.get("station_name") if wind_profiler_available else None,

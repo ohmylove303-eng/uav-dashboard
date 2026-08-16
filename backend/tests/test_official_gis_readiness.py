@@ -130,6 +130,23 @@ class OfficialGisReadinessTests(unittest.TestCase):
                 "encoded/surface+key",
             )
 
+    def test_kma_credential_scope_reports_path_without_exposing_credential(self):
+        with (
+            patch.object(main, "KMA_API_KEY", None),
+            patch.dict(
+                main.os.environ,
+                {
+                    "KMA_SURFACE_API_KEY": "surface-only-key",
+                    "KMA_API_KEY": "legacy-key",
+                },
+                clear=True,
+            ),
+        ):
+            self.assertEqual(main._kma_credential_scope("surface"), "dedicated")
+            self.assertEqual(main._kma_credential_scope("upper_air"), "legacy")
+            self.assertNotIn("surface-only-key", main._kma_credential_scope("surface"))
+            self.assertNotIn("legacy-key", main._kma_credential_scope("upper_air"))
+
     def test_kma_status_requires_surface_and_low_altitude_profile_for_authoritative_availability(self):
         with (
             patch.object(
@@ -162,6 +179,7 @@ class OfficialGisReadinessTests(unittest.TestCase):
         self.assertFalse(payload["authoritative_flight_weather_available"])
         self.assertEqual(payload["reason"], "surface_weather_auth_denied")
         self.assertFalse(payload["surface"]["available"])
+        self.assertIn(payload["surface"]["credential_scope"], {"dedicated", "legacy", "unconfigured"})
         self.assertTrue(payload["upper_air"]["available"])
         self.assertFalse(payload["wind_profiler"]["available"])
         self.assertNotIn("kma-key", str(payload))
