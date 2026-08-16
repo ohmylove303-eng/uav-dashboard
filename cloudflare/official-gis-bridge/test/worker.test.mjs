@@ -43,6 +43,30 @@ const roadFeatures = {
   ],
 };
 
+const buildingFeaturesWgs84 = {
+  type: "FeatureCollection",
+  features: [
+    {
+      type: "Feature",
+      id: "lt_c_spbd.7",
+      properties: { bd_mgt_sn: buildingManagementNumber, buld_nm: "Target Building" },
+      geometry: {
+        type: "Polygon",
+        coordinates: [[[-0.00008, -0.00004], [-0.00004, -0.00004], [-0.00004, 0.00004], [-0.00008, 0.00004], [-0.00008, -0.00004]]],
+      },
+    },
+    {
+      type: "Feature",
+      id: "opposing-building",
+      properties: { buld_nm: "Opposing Building" },
+      geometry: {
+        type: "Polygon",
+        coordinates: [[[0.00004, -0.00004], [0.00008, -0.00004], [0.00008, 0.00004], [0.00004, 0.00004], [0.00004, -0.00004]]],
+      },
+    },
+  ],
+};
+
 function makeWorker(buildings = buildingFeatures) {
   return createWorker({
     fetchImpl: async (url) => new Response(
@@ -110,6 +134,43 @@ test("falls back to API WFS without domain when the Map WFS building request fai
   assert.equal(apiBuildingUrl?.searchParams.get("service"), "WFS");
   assert.equal(apiBuildingUrl?.searchParams.get("request"), "GetFeature");
   assert.equal(apiBuildingUrl?.searchParams.get("srsname"), "EPSG:3857");
+});
+
+test("uses the documented EPSG:4326 API WFS request after both EPSG:3857 requests fail", async () => {
+  const urls = [];
+  const worker = createWorker({
+    fetchImpl: async (url) => {
+      const parsed = new URL(url);
+      urls.push(parsed);
+      const isBuilding = (parsed.searchParams.get("TYPENAME") ?? parsed.searchParams.get("typename")) === "lt_c_spbd";
+      const isCanonicalWgs84 = parsed.hostname === "api.vworld.kr"
+        && parsed.searchParams.get("TYPENAME") === "lt_c_spbd"
+        && parsed.searchParams.get("SRSNAME") === "EPSG:4326";
+      if (isBuilding && !isCanonicalWgs84) return new Response("upstream unavailable", { status: 502 });
+      return new Response(
+        isCanonicalWgs84 ? `uavOfficialWfs(${JSON.stringify(buildingFeaturesWgs84)})` : JSON.stringify(roadFeatures),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    },
+  });
+
+  const response = await worker.fetch(
+    new Request(bridgeUrl, { headers: { authorization: "Bearer server-only-token" } }),
+    env,
+  );
+  const payload = await response.json();
+  const canonicalUrl = urls.find((url) => url.hostname === "api.vworld.kr"
+    && url.searchParams.get("TYPENAME") === "lt_c_spbd"
+    && url.searchParams.get("SRSNAME") === "EPSG:4326");
+
+  assert.equal(payload.available, true);
+  assert.equal(payload.facade_gap_m, 8.9);
+  assert.equal(canonicalUrl?.searchParams.get("SERVICE"), "WFS");
+  assert.equal(canonicalUrl?.searchParams.get("request"), "GetFeature");
+  assert.equal(canonicalUrl?.searchParams.get("OUTPUT"), "text/javascript");
+  assert.equal(canonicalUrl?.searchParams.get("key"), "vworld-server-only-key");
+  assert.equal(canonicalUrl?.searchParams.get("callback"), "uavOfficialWfs");
+  assert.match(canonicalUrl?.searchParams.get("BBOX") ?? "", /^-0\.001/);
 });
 
 test("does not send a browser referer to the API WFS fallback", async () => {
@@ -336,6 +397,7 @@ test("identifies the official upstream that is unavailable without fabricating c
   assert.deepEqual(payload.upstream_attempts, [
     { source_origin: "vworld_map_wfs", outcome: "upstream_status_502" },
     { source_origin: "vworld_api_wfs", outcome: "upstream_status_502" },
+    { source_origin: "vworld_api_wfs_4326", outcome: "upstream_status_502" },
   ]);
 });
 
@@ -361,6 +423,7 @@ test("classifies a VWorld invalid-key service exception without exposing its res
   assert.deepEqual(payload.upstream_attempts, [
     { source_origin: "vworld_map_wfs", outcome: "key_unregistered" },
     { source_origin: "vworld_api_wfs", outcome: "key_unregistered" },
+    { source_origin: "vworld_api_wfs_4326", outcome: "key_unregistered" },
   ]);
   assert.equal(JSON.stringify(payload).includes("등록되지 않은 인증키"), false);
 });

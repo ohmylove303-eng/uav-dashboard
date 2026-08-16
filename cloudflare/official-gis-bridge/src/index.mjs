@@ -125,6 +125,26 @@ function roadBbox(lat, lon, radiusM = 500) {
   return `${x - radiusM},${y - radiusM},${x + radiusM},${y + radiusM}`;
 }
 
+function wgs84Bbox(lat, lon, radiusM = 500) {
+  const latitudeDelta = radiusM / 111_320;
+  const longitudeDelta = radiusM / (111_320 * Math.max(Math.cos(lat * Math.PI / 180), 0.01));
+  return `${lon - longitudeDelta},${lat - latitudeDelta},${lon + longitudeDelta},${lat + latitudeDelta}`;
+}
+
+function normalizePoint(point, coordinateReferenceSystem) {
+  if (!Array.isArray(point) || point.length < 2) return null;
+  const [x, y] = point.map(Number);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return coordinateReferenceSystem === "EPSG:4326" ? lonLatToMercator(x, y) : [x, y];
+}
+
+function normalizePath(path, coordinateReferenceSystem) {
+  return (path ?? []).flatMap((point) => {
+    const normalized = normalizePoint(point, coordinateReferenceSystem);
+    return normalized ? [normalized] : [];
+  });
+}
+
 function pointInRing(lon, lat, ring) {
   if (ring.length < 4) return false;
   let inside = false;
@@ -168,9 +188,9 @@ function canyonReceiptTargetIdentifiers(target) {
   };
 }
 
-function extractBuildings(payload) {
+function extractBuildings(payload, coordinateReferenceSystem) {
   return (payload?.features ?? []).flatMap((feature) => {
-    const ring = ringFromGeometry(feature.geometry);
+    const ring = normalizePath(ringFromGeometry(feature.geometry), coordinateReferenceSystem);
     // Do not merge official identifier kinds. Task-7 native selection is the
     // WFS feature ID; bd_mgt_sn is a separate official building identifier.
     const nativeId = nativeFeatureId(feature);
@@ -187,14 +207,14 @@ function extractBuildings(payload) {
   });
 }
 
-function linesFromGeometry(geometry) {
+function linesFromGeometry(geometry, coordinateReferenceSystem) {
   if (!geometry || typeof geometry !== "object") return [];
-  if (geometry.type === "LineString") return [geometry.coordinates];
-  if (geometry.type === "MultiLineString") return geometry.coordinates;
+  if (geometry.type === "LineString") return [normalizePath(geometry.coordinates, coordinateReferenceSystem)];
+  if (geometry.type === "MultiLineString") return geometry.coordinates.map((path) => normalizePath(path, coordinateReferenceSystem));
   return [];
 }
 
-function parseWktLines(value) {
+function parseWktLines(value, coordinateReferenceSystem) {
   const text = String(value ?? "").trim();
   if (!text) return [];
   const matches = text.match(/(?:LINESTRING|MULTILINESTRING)\s*\((.*)\)$/i);
@@ -202,7 +222,8 @@ function parseWktLines(value) {
   const chunks = text.toUpperCase().startsWith("MULTILINESTRING") ? matches[1].split("),(") : [matches[1]];
   return chunks.map((chunk) => chunk.replaceAll("(", "").replaceAll(")", "").split(",").flatMap((pair) => {
     const [x, y] = pair.trim().split(/\s+/).map(Number);
-    return Number.isFinite(x) && Number.isFinite(y) ? [[x, y]] : [];
+    const normalized = normalizePoint([x, y], coordinateReferenceSystem);
+    return normalized ? [normalized] : [];
   })).filter((line) => line.length >= 2);
 }
 
@@ -231,13 +252,13 @@ function positiveNumber(value) {
   return Number.isFinite(parsed) && parsed > 0 ? Number(parsed.toFixed(1)) : null;
 }
 
-function selectRoad(payload, lat, lon, requestedRoadName) {
+function selectRoad(payload, lat, lon, requestedRoadName, coordinateReferenceSystem) {
   const point = lonLatToMercator(lon, lat);
   const normalizedRequest = String(requestedRoadName ?? "").trim();
   const candidates = (payload?.features ?? []).flatMap((feature) => {
     const properties = feature.properties ?? {};
-    const paths = linesFromGeometry(feature.geometry);
-    const resolvedPaths = paths.length ? paths : parseWktLines(properties.ag_geom);
+    const paths = linesFromGeometry(feature.geometry, coordinateReferenceSystem);
+    const resolvedPaths = paths.length ? paths : parseWktLines(properties.ag_geom, coordinateReferenceSystem);
     if (!resolvedPaths.length) return [];
     const name = roadName(properties);
     return [{
@@ -286,17 +307,28 @@ function unavailable(reason, road = null, target = null, upstreamAttempts = [], 
   return payload;
 }
 
-async function fetchJson(fetchImpl, url, referer, source) {
+function parseJsonOrFixedJsonp(text, callbackName) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    if (!callbackName) return null;
+  }
+  const escapedCallback = callbackName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = text.match(new RegExp(`^\\s*${escapedCallback}\\((\\{[\\s\\S]*\\}|\\[[\\s\\S]*\\])\\);?\\s*$`));
+  if (!match) return null;
+  try {
+    return JSON.parse(match[1]);
+  } catch {
+    return null;
+  }
+}
+
+async function fetchJson(fetchImpl, url, referer, source, jsonpCallback = null) {
   const headers = { accept: "application/json", "user-agent": "uav-official-gis-bridge/1.0" };
   if (referer) headers.referer = referer;
   const response = await fetchImpl(url, { headers });
   const text = await response.text();
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    parsed = null;
-  }
+  const parsed = parseJsonOrFixedJsonp(text, jsonpCallback);
   const structuredReason = structuredServiceReason(parsed);
   if (response.ok && parsed !== null && !structuredReason) return parsed;
   const safeResponseReason = (() => {
@@ -313,7 +345,7 @@ async function fetchJson(fetchImpl, url, referer, source) {
   throw new Error(`${source}_upstream_invalid_json`);
 }
 
-function wfsRequests({ typeName, maxFeatures, bbox, propertyName, env }) {
+function wfsRequests({ typeName, maxFeatures, bbox, wgs84BboxValue, propertyName, env }) {
   const mapCommon = {
     SERVICE: "WFS", REQUEST: "GetFeature", VERSION: "1.1.0", TYPENAME: typeName,
     MAXFEATURES: maxFeatures, SRSNAME: "EPSG:3857", OUTPUT: "application/json", EXCEPTIONS: "text/xml", BBOX: bbox,
@@ -322,9 +354,15 @@ function wfsRequests({ typeName, maxFeatures, bbox, propertyName, env }) {
     service: "WFS", request: "GetFeature", version: "1.1.0", typename: typeName,
     maxfeatures: maxFeatures, srsname: "EPSG:3857", output: "application/json", exceptions: "text/xml", bbox,
   };
+  const apiStandardCommon = {
+    key: env.VWORLD_DATA_API_KEY, SERVICE: "WFS", version: "1.1.0", request: "GetFeature", TYPENAME: typeName,
+    maxfeatures: maxFeatures, SRSNAME: "EPSG:4326", OUTPUT: "text/javascript", EXCEPTIONS: "text/xml", BBOX: wgs84BboxValue,
+    callback: "uavOfficialWfs",
+  };
   if (propertyName) {
     mapCommon.PROPERTYNAME = propertyName;
     apiCommon.propertyname = propertyName;
+    apiStandardCommon.PROPERTYNAME = propertyName;
   }
   const registeredDomain = (() => {
     try {
@@ -337,9 +375,17 @@ function wfsRequests({ typeName, maxFeatures, bbox, propertyName, env }) {
   mapUrl.search = new URLSearchParams({ ...mapCommon, APIKEY: env.VWORLD_DATA_API_KEY, DOMAIN: registeredDomain }).toString();
   const apiUrl = new URL(API_WFS_ENDPOINT);
   apiUrl.search = new URLSearchParams({ ...apiCommon, key: env.VWORLD_DATA_API_KEY }).toString();
+  const apiStandardUrl = new URL(API_WFS_ENDPOINT);
+  apiStandardUrl.search = new URLSearchParams(apiStandardCommon).toString();
   return [
-    { url: mapUrl, sourceOrigin: "vworld_map_wfs" },
-    { url: apiUrl, sourceOrigin: "vworld_api_wfs" },
+    { url: mapUrl, sourceOrigin: "vworld_map_wfs", coordinateReferenceSystem: "EPSG:3857" },
+    { url: apiUrl, sourceOrigin: "vworld_api_wfs", coordinateReferenceSystem: "EPSG:3857" },
+    {
+      url: apiStandardUrl,
+      sourceOrigin: "vworld_api_wfs_4326",
+      coordinateReferenceSystem: "EPSG:4326",
+      jsonpCallback: "uavOfficialWfs",
+    },
   ];
 }
 
@@ -348,6 +394,7 @@ function buildingRequests(lat, lon, env) {
     typeName: env.VWORLD_WFS_TYPENAME || BUILDING_LAYER,
     maxFeatures: "100",
     bbox: roadBbox(lat, lon, 180),
+    wgs84BboxValue: wgs84Bbox(lat, lon, 180),
     env,
   });
 }
@@ -357,6 +404,7 @@ function roadRequests(lat, lon, env) {
     typeName: ROAD_LAYER,
     maxFeatures: "80",
     bbox: roadBbox(lat, lon),
+    wgs84BboxValue: wgs84Bbox(lat, lon),
     propertyName: "rvwd,rdln,rdnm,ag_geom",
     env,
   });
@@ -367,7 +415,11 @@ async function fetchOfficialWfsJson(fetchImpl, requests, referer, source) {
   for (const request of requests) {
     try {
       const requestReferer = request.sourceOrigin === "vworld_map_wfs" ? referer : null;
-      return { payload: await fetchJson(fetchImpl, request.url, requestReferer, source), sourceOrigin: request.sourceOrigin };
+      return {
+        payload: await fetchJson(fetchImpl, request.url, requestReferer, source, request.jsonpCallback),
+        sourceOrigin: request.sourceOrigin,
+        coordinateReferenceSystem: request.coordinateReferenceSystem,
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : "upstream_request_failed";
       const rawOutcome = message.startsWith(`${source}_`) ? message.slice(source.length + 1) : "upstream_request_failed";
@@ -394,7 +446,7 @@ async function canyonEvidence(lat, lon, roadNameValue, selectionId, targetIdenti
   }
   const buildingPayload = buildingResult.payload;
   const roadPayload = roadResult.payload;
-  const buildings = extractBuildings(buildingPayload);
+  const buildings = extractBuildings(buildingPayload, buildingResult.coordinateReferenceSystem);
   const clickPoint = lonLatToMercator(lon, lat);
   const targetMatches = buildings.filter((building) => pointInRing(clickPoint[0], clickPoint[1], building.ring));
   const target = targetMatches.length === 1 ? targetMatches[0] : null;
@@ -411,7 +463,7 @@ async function canyonEvidence(lat, lon, roadNameValue, selectionId, targetIdenti
   if (!targetIdentifierValue) return unavailable("canyon_target_identifier_missing", null, targetReceipt, [], selectionId);
   if (targetIdentifierValue !== targetIdentifier.value) return unavailable("canyon_target_identifier_mismatch", null, targetReceipt, [], selectionId);
   target.targetIdentifier = targetIdentifier;
-  const road = selectRoad(roadPayload, lat, lon, roadNameValue);
+  const road = selectRoad(roadPayload, lat, lon, roadNameValue, roadResult.coordinateReferenceSystem);
   if (!road) return unavailable("official_road_geometry_not_matched", null, targetReceipt, [], selectionId);
   const measurement = measureFacadeGap({ targetRing: target.ring, roadPath: road.paths[0], buildings: buildings.filter((building) => building !== target) });
   if (!measurement.available) return unavailable(measurement.reason, road, targetReceipt, [], selectionId);
